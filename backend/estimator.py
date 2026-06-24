@@ -1011,52 +1011,202 @@ def generate_excel_report(project_id, template_path, output_path):
             cursor_cost.close()
             conn_cost.close()
 
-        # 2. Compute project totals
-        total_labor = sum(item['components']['labor'] * item['qty'] for item in calc_results)
-        total_al = sum(item['components']['aluminum'] * item['qty'] for item in calc_results)
-        total_gl = sum(item['components']['glass'] * item['qty'] for item in calc_results)
-        total_aux = sum(item['components']['auxiliary'] * item['qty'] for item in calc_results)
+        # 2. Compute project totals and scale factor based on door areas
+        total_project_area = sum(item['total_area'] for item in calc_results)
+        # Template sample total door area is 12156.0 m2 (from row 14 col E of original template)
+        scale_factor = total_project_area / 12156.0 if total_project_area > 0 else 0.0
 
-        # 3. Update summary sheet cells and look up cost rows dynamically
+        # 3. Categorize door areas for labor cost breakdown
+        area_di_lua = 0.0
+        area_di_quay = 0.0
+        area_so_lua = 0.0
+        area_vach_kinh = 0.0
+        
+        for item in calc_results:
+            t_code = item['template_code'].upper()
+            t_name = item['name'].upper()
+            t_area = item['total_area']
+            
+            if 'VKT' in t_code or 'VÁCH' in t_name:
+                area_vach_kinh += t_area
+            elif 'CỬA ĐI' in item['type'].upper() or 'CD' in t_code:
+                if 'LÙA' in t_name or 'CL' in t_code or 'SL' in t_code:
+                    area_di_lua += t_area
+                else:
+                    area_di_quay += t_area
+            elif 'CỬA SỔ' in item['type'].upper() or 'CS' in t_code:
+                if 'LÙA' in t_name or 'SL' in t_code:
+                    area_so_lua += t_area
+                else:
+                    area_so_lua += t_area # Fallback window area to window sliding rate
+
+        # 4. Aggregate actual project materials
+        project_aluminum = {} # code -> total_weight (kg)
+        project_accessories = {} # code -> total_qty
+        project_glass = {} # code -> total_area (m2)
+
+        for item in calc_results:
+            qty_sets = item['qty']
+            
+            # Aluminum
+            for p in item.get('profiles', []):
+                p_code = p['code'].strip().upper()
+                p_weight = p['total_weight'] * qty_sets
+                project_aluminum[p_code] = project_aluminum.get(p_code, 0.0) + p_weight
+                
+            # Accessories
+            for a in item.get('accessories', []):
+                a_code = a['code'].strip().upper()
+                a_qty = a['qty'] * qty_sets
+                project_accessories[a_code] = project_accessories.get(a_code, 0.0) + a_qty
+                
+            # Glass
+            g_type = item['glass_type'].strip().lower()
+            g_area = item.get('glass_area_used', item['area'] * 0.87) * qty_sets
+            matched_glass = 'bk'
+            if '8' in g_type:
+                matched_glass = 'k8cl'
+            elif '10' in g_type:
+                matched_glass = 'k10cl'
+            project_glass[matched_glass] = project_glass.get(matched_glass, 0.0) + g_area
+
+        # 5. Load material prices from database for precise cost calculation
+        conn_mats = get_db_connection()
+        cursor_mats = conn_mats.cursor()
+        project_prices = {}
+        global_prices = {}
+        
+        try:
+            # Project-specific prices
+            cursor_mats.execute("SELECT material_code, price FROM project_material_prices WHERE project_id = %s", (project_id,))
+            project_prices = {row[0].strip().upper(): float(row[1]) for row in cursor_mats.fetchall() if row[0] and row[1] is not None}
+            
+            # Global default prices
+            cursor_mats.execute("SELECT code, default_price FROM materials")
+            global_prices = {row[0].strip().upper(): float(row[1]) for row in cursor_mats.fetchall() if row[0] and row[1] is not None}
+        except Exception as e:
+            print(f"Warning: Could not fetch database material prices: {e}")
+        finally:
+            cursor_mats.close()
+            conn_mats.close()
+
+        # 5.5. Read default values first so we can compute rates and scale others
+        default_values = {}
         for r in range(1, 150):
             stt = ws_summary.cell(row=r, column=1).value
             stt_str = str(stt).strip() if stt is not None else ""
-            val = ws_summary.cell(row=r, column=2).value # DIỄN GIẢI
+            val = ws_summary.cell(row=r, column=2).value
+            val_str = str(val).strip() if val is not None else ""
             
-            if val:
-                val_str = str(val).strip().lower()
+            qty_val = ws_summary.cell(row=r, column=5).value
+            price_val = ws_summary.cell(row=r, column=6).value
+            total_val = ws_summary.cell(row=r, column=7).value
+            
+            default_values[r] = {
+                'stt': stt_str,
+                'val': val_str,
+                'qty': float(qty_val) if isinstance(qty_val, (int, float)) else 0.0,
+                'price': float(price_val) if isinstance(price_val, (int, float)) else 0.0,
+                'total': float(total_val) if isinstance(total_val, (int, float)) else 0.0
+            }
+
+        # Helper function to find the actual price of a material
+        def get_actual_price(mat_code, d_row):
+            code_upper = str(mat_code).strip().upper()
+            if code_upper in project_prices:
+                return project_prices[code_upper]
+            if code_upper in global_prices:
+                return global_prices[code_upper]
+            # Fallback to template-defined price (total / qty)
+            if d_row['qty'] > 0:
+                return d_row['total'] / d_row['qty']
+            return d_row['price']
+
+        # 6. Update CPHoanThien sheet rows dynamically
+        for r in range(1, 150):
+            d = default_values.get(r)
+            if not d or not d['val']:
+                continue
                 
-                # Check for DOANH THU to map total revenue (only the main revenue row with STT 'A')
-                if 'doanh thu' in val_str and stt_str == 'A':
-                    ws_summary.cell(row=r, column=7, value=f"=DETAIL!J{total_row}")
+            val_str = d['val'].strip().lower()
+            stt_str = d['stt']
+            
+            # Check for DOANH THU to map total revenue (only the main revenue row with STT 'A')
+            if 'doanh thu' in val_str and stt_str == 'A':
+                ws_summary.cell(row=r, column=7, value=f"=DETAIL!J{total_row}")
                 
-                # Direct cost breakdown components (write to G column, column 7)
-                elif 'chi phí gia công' in val_str or 'chi phi gia cong' in val_str:
-                    ws_summary.cell(row=r, column=7, value=total_labor * 0.327)
-                elif 'chi phí lắp đặt' in val_str or 'chi phi lap dat' in val_str:
-                    ws_summary.cell(row=r, column=7, value=total_labor * 0.606)
-                elif 'nhân công vệ sinh' in val_str or 'nhan cong ve sinh' in val_str:
-                    ws_summary.cell(row=r, column=7, value=total_labor * 0.067)
-                elif 'chi phí nhôm' in val_str or 'chi phi nhom' in val_str:
-                    ws_summary.cell(row=r, column=7, value=total_al)
-                elif 'chi phí kính' in val_str or 'chi phi kinh' in val_str:
-                    ws_summary.cell(row=r, column=7, value=total_gl)
-                elif 'phụ kiện nhôm kính' in val_str or 'phu kien nhom kinh' in val_str:
-                    ws_summary.cell(row=r, column=7, value=total_aux * 0.774)
-                elif 'gioăng' in val_str:
-                    ws_summary.cell(row=r, column=7, value=total_aux * 0.051)
-                elif 'vật tư phụ' in val_str or 'vat tu phu' in val_str:
-                    ws_summary.cell(row=r, column=7, value=total_aux * 0.175)
+            # Fill cost overhead percentages in Column F (Column 6)
+            elif 'chi phí công ty' in val_str or 'chi phi cong ty' in val_str:
+                ws_summary.cell(row=r, column=6, value=p_company / 100.0)
+            elif 'dự phòng phí' in val_str or 'du phong phi' in val_str:
+                ws_summary.cell(row=r, column=6, value=p_contingency / 100.0)
+            elif 'dự phòng bảo hành' in val_str or 'du phong bao hanh' in val_str:
+                ws_summary.cell(row=r, column=6, value=p_warranty / 100.0)
+            elif 'chi phí khác' in val_str or 'chi phi khac' in val_str:
+                ws_summary.cell(row=r, column=6, value=p_other / 100.0)
                 
-                # Fill cost overhead percentages in Column F (Column 6)
-                elif 'chi phí công ty' in val_str or 'chi phi cong ty' in val_str:
-                    ws_summary.cell(row=r, column=6, value=p_company / 100.0)
-                elif 'dự phòng phí' in val_str or 'du phong phi' in val_str:
-                    ws_summary.cell(row=r, column=6, value=p_contingency / 100.0)
-                elif 'dự phòng bảo hành' in val_str or 'du phong bao hanh' in val_str:
-                    ws_summary.cell(row=r, column=6, value=p_warranty / 100.0)
-                elif 'chi phí khác' in val_str or 'chi phi khac' in val_str:
-                    ws_summary.cell(row=r, column=6, value=p_other / 100.0)
+            # Direct labor cost breakdown rows
+            elif 'nhân công gia công' in val_str or 'nhân công lắp đặt' in val_str or 'chi phí vệ sinh' in val_str:
+                # Find labor category rate
+                rate = d['total'] / d['qty'] if d['qty'] > 0 else d['price']
+                
+                # Determine door area type
+                door_area = 0.0
+                if 'cửa đi lùa' in val_str:
+                    door_area = area_di_lua
+                elif 'cửa đi mở quay' in val_str:
+                    door_area = area_di_quay
+                elif 'cửa sổ lùa' in val_str:
+                    door_area = area_so_lua
+                elif 'vách kính' in val_str:
+                    door_area = area_vach_kinh
+                    
+                ws_summary.cell(row=r, column=5, value=door_area)
+                ws_summary.cell(row=r, column=7, value=door_area * rate)
+                
+            # Aluminum cost rows
+            elif r >= 25 and r <= 57: # Aluminum detailed items
+                mat_code = d['val'].strip().upper()
+                act_weight = project_aluminum.get(mat_code, 0.0)
+                price = get_actual_price(mat_code, d)
+                ws_summary.cell(row=r, column=5, value=act_weight)
+                ws_summary.cell(row=r, column=7, value=act_weight * price)
+                
+            # Glass cost rows
+            elif r >= 59 and r <= 64: # Glass detailed items
+                mat_code = d['val'].strip().lower()
+                if mat_code in ['k8cl', 'k10cl', 'bk']:
+                    act_area = project_glass.get(mat_code, 0.0)
+                    price = get_actual_price(mat_code, d)
+                    ws_summary.cell(row=r, column=5, value=act_area)
+                    ws_summary.cell(row=r, column=7, value=act_area * price)
+                else: # Glass processing services (scale by scale_factor)
+                    act_qty = d['qty'] * scale_factor
+                    price = get_actual_price(mat_code, d)
+                    ws_summary.cell(row=r, column=5, value=act_qty)
+                    ws_summary.cell(row=r, column=7, value=act_qty * price)
+                    
+            # Accessory cost rows
+            elif r >= 66 and r <= 80: # Accessories detailed items
+                mat_code = d['val'].strip().upper()
+                act_qty = project_accessories.get(mat_code, 0.0)
+                price = get_actual_price(mat_code, d)
+                ws_summary.cell(row=r, column=5, value=act_qty)
+                ws_summary.cell(row=r, column=7, value=act_qty * price)
+                
+            # Gasket, auxiliary, transport (scale qty & total)
+            elif (r >= 82 and r <= 83) or (r >= 85 and r <= 88) or r == 90:
+                act_qty = d['qty'] * scale_factor
+                price = get_actual_price(d['val'], d)
+                ws_summary.cell(row=r, column=5, value=act_qty)
+                ws_summary.cell(row=r, column=7, value=act_qty * price)
+                
+            # Equipment cost (row 99) and management overhead (row 118) (scale qty & total)
+            elif r == 99 or r == 118:
+                act_qty = d['qty'] * scale_factor
+                act_total = d['total'] * scale_factor
+                ws_summary.cell(row=r, column=5, value=act_qty)
+                ws_summary.cell(row=r, column=7, value=act_total)
 
     # Update detail breakdown sheets (CSL-50.01, CSL-50.02, CSL-50.03...)
     for item in calc_results:
