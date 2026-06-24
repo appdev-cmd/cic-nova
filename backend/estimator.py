@@ -1011,22 +1011,43 @@ def generate_excel_report(project_id, template_path, output_path):
             cursor_cost.close()
             conn_cost.close()
 
-        # 2. Update summary sheet cells and look up cost rows dynamically
+        # 2. Compute project totals
+        total_labor = sum(item['components']['labor'] * item['qty'] for item in calc_results)
+        total_al = sum(item['components']['aluminum'] * item['qty'] for item in calc_results)
+        total_gl = sum(item['components']['glass'] * item['qty'] for item in calc_results)
+        total_aux = sum(item['components']['auxiliary'] * item['qty'] for item in calc_results)
+
+        # 3. Update summary sheet cells and look up cost rows dynamically
         for r in range(1, 150):
+            stt = ws_summary.cell(row=r, column=1).value
+            stt_str = str(stt).strip() if stt is not None else ""
             val = ws_summary.cell(row=r, column=2).value # DIỄN GIẢI
+            
             if val:
                 val_str = str(val).strip().lower()
-                # Check for DOANH THU to map total revenue
-                if 'doanh thu' in val_str:
+                
+                # Check for DOANH THU to map total revenue (only the main revenue row with STT 'A')
+                if 'doanh thu' in val_str and stt_str == 'A':
                     ws_summary.cell(row=r, column=7, value=f"=DETAIL!J{total_row}")
-                # Check for TỔNG CHI PHÍ to map total production cost
-                elif 'tổng chi phí' in val_str or 'tong chi phi' in val_str:
-                    total_labor = sum(item['components']['labor'] * item['qty'] for item in calc_results)
-                    total_al = sum(item['components']['aluminum'] * item['qty'] for item in calc_results)
-                    total_gl = sum(item['components']['glass'] * item['qty'] for item in calc_results)
-                    total_aux = sum(item['components']['auxiliary'] * item['qty'] for item in calc_results)
-                    total_cost = total_labor + total_al + total_gl + total_aux
-                    ws_summary.cell(row=r, column=7, value=total_cost)
+                
+                # Direct cost breakdown components (write to G column, column 7)
+                elif 'chi phí gia công' in val_str or 'chi phi gia cong' in val_str:
+                    ws_summary.cell(row=r, column=7, value=total_labor * 0.327)
+                elif 'chi phí lắp đặt' in val_str or 'chi phi lap dat' in val_str:
+                    ws_summary.cell(row=r, column=7, value=total_labor * 0.606)
+                elif 'nhân công vệ sinh' in val_str or 'nhan cong ve sinh' in val_str:
+                    ws_summary.cell(row=r, column=7, value=total_labor * 0.067)
+                elif 'chi phí nhôm' in val_str or 'chi phi nhom' in val_str:
+                    ws_summary.cell(row=r, column=7, value=total_al)
+                elif 'chi phí kính' in val_str or 'chi phi kinh' in val_str:
+                    ws_summary.cell(row=r, column=7, value=total_gl)
+                elif 'phụ kiện nhôm kính' in val_str or 'phu kien nhom kinh' in val_str:
+                    ws_summary.cell(row=r, column=7, value=total_aux * 0.774)
+                elif 'gioăng' in val_str:
+                    ws_summary.cell(row=r, column=7, value=total_aux * 0.051)
+                elif 'vật tư phụ' in val_str or 'vat tu phu' in val_str:
+                    ws_summary.cell(row=r, column=7, value=total_aux * 0.175)
+                
                 # Fill cost overhead percentages in Column F (Column 6)
                 elif 'chi phí công ty' in val_str or 'chi phi cong ty' in val_str:
                     ws_summary.cell(row=r, column=6, value=p_company / 100.0)
