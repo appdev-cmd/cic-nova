@@ -1,0 +1,31 @@
+# Python / Backend
+backend/venv/
+backend/uploads/
+backend/cic_nova.db
+backend/__pycache__/
+*.pyc
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Supabase Docker
+supabase-docker/.env
+supabase-docker/volumes/
+
+# Excel generated outputs and temp files
+*CALCULATED.xlsx
+*CALCULATED.xls
+*DU_AN_*.xlsx
+*DU_AN_*.xls
+.~lock.*
+test_clear.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
