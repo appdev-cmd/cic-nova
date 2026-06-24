@@ -260,7 +260,7 @@ def parse_opera_excel(project_id, file_path, cursor, conn):
     return imported_count
 
 def parse_typologies_excel_format(project_id, df, cursor, conn):
-    print("Detected ĐỊNH MỨC TYPOLOGIES Excel format...")
+    print("Detected DINH MUC TYPOLOGIES Excel format...")
     unique_materials = {}
     for idx, row in df.iterrows():
         code = str(row.get('Code', '')).strip()
