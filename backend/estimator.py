@@ -7,6 +7,30 @@ from copy import copy
 from openpyxl.utils.dataframe import dataframe_to_rows
 from database import get_db_connection
 
+def determine_door_type(code, name=""):
+    code_upper = str(code).upper()
+    name_upper = str(name).upper()
+    
+    # 1. Vách kính
+    if 'VKT' in code_upper or 'VÁCH' in name_upper or 'VKT' in name_upper:
+        return 'VÁCH KÍNH'
+        
+    # 2. Cửa sổ
+    if 'SWA' in code_upper or 'WA' in code_upper or 'CS' in code_upper or 'SỔ' in name_upper:
+        return 'CỬA SỔ'
+        
+    # 3. Cửa đi
+    if 'SDA' in code_upper or 'DA' in code_upper or 'CD' in code_upper or 'ĐI' in name_upper or 'CỬA ĐI' in name_upper:
+        return 'CỬA ĐI'
+        
+    # 4. Fallback
+    if 'WINDOW' in name_upper:
+        return 'CỬA SỔ'
+    if 'DOOR' in name_upper:
+        return 'CỬA ĐI'
+        
+    return 'CỬA SỔ'
+
 def parse_opera_file(project_id, file_path):
     """
     Parse Opera export (.xls, .xlsx, or .xml) and:
@@ -127,7 +151,7 @@ def parse_opera_xml(project_id, file_path, cursor, conn):
         cursor.execute("SELECT id FROM templates WHERE code = %s", (cmp_name,))
         tmpl_row = cursor.fetchone()
         
-        door_type = "CỬA ĐI" if "đối" in cmp_name.lower() or "đi" in cmp_name.lower() else "CỬA SỔ"
+        door_type = determine_door_type(cmp_name, cmp_name)
         
         if tmpl_row:
             template_id = tmpl_row[0]
@@ -340,7 +364,7 @@ def parse_typologies_excel_format(project_id, df, cursor, conn):
         cursor.execute("SELECT id FROM templates WHERE code = %s", (typo_name,))
         tmpl_row = cursor.fetchone()
         
-        door_type = "CỬA ĐI" if "đi" in typo_name.lower() or "wa" in typo_name.lower() else "CỬA SỔ"
+        door_type = determine_door_type(typo_name, typo_name)
         
         if tmpl_row:
             template_id = tmpl_row[0]
@@ -844,11 +868,12 @@ def generate_excel_report(project_id, template_path, output_path):
             if r_range.min_row >= 9:
                 ws_detail.unmerge_cells(str(r_range))
         
-        # 2. Clear all rows from row 9 to the max row of the worksheet
-        # (This avoids any leftovers from the template)
+        # 2. Clear all rows from row 9 to the max row of the worksheet and clear old groupings
+        # (This avoids any leftovers and incorrect outlines from the template)
         original_max_row = ws_detail.max_row
         for r in range(9, original_max_row + 1):
             ws_detail.row_dimensions[r].hidden = False # Unhide
+            ws_detail.row_dimensions[r].outline_level = 0 # Clear group Outline level
             for col in range(1, ws_detail.max_column + 1):
                 cell = ws_detail.cell(row=r, column=col)
                 if cell.__class__.__name__ == 'Cell':
@@ -946,6 +971,10 @@ def generate_excel_report(project_id, template_path, output_path):
                 
                 apply_row_styles(ws_detail, current_row, data_styles)
                 current_row += 1
+                
+            # Group the data rows under this category dynamically
+            if end_r >= start_r:
+                ws_detail.row_dimensions.group(start_r, end_r, outline_level=1, hidden=False)
                 
         # 4. Write Total Row
         total_row = current_row
