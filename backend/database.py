@@ -4,6 +4,27 @@ import os
 import re
 
 SUPABASE_ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "supabase-docker", ".env"))
+BACKEND_ENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), ".env"))
+
+def load_backend_env():
+    env_vars = {}
+    if os.path.exists(BACKEND_ENV_PATH):
+        try:
+            with open(BACKEND_ENV_PATH, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = line.split('=', 1)
+                        if len(parts) == 2:
+                            key = parts[0].strip()
+                            val = parts[1].strip()
+                            # Strip quotes if present
+                            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                                val = val[1:-1]
+                            env_vars[key] = val
+        except Exception as e:
+            print(f"Warning: Could not read backend .env file: {e}")
+    return env_vars
 
 def get_postgres_password():
     if not os.path.exists(SUPABASE_ENV_PATH):
@@ -18,6 +39,21 @@ def get_postgres_password():
     raise ValueError("POSTGRES_PASSWORD not found in Supabase .env file")
 
 def get_db_connection():
+    # 1. Try to load backend .env for Supabase Cloud first
+    env = load_backend_env()
+    if env.get('SUPABASE_DB_HOST'):
+        # Connect to Supabase Cloud
+        conn = psycopg2.connect(
+            host=env['SUPABASE_DB_HOST'],
+            port=int(env.get('SUPABASE_DB_PORT', 6543)),
+            database=env.get('SUPABASE_DB_NAME', 'postgres'),
+            user=env['SUPABASE_DB_USER'],
+            password=env['SUPABASE_DB_PASSWORD'],
+            cursor_factory=psycopg2.extras.DictCursor
+        )
+        return conn
+        
+    # 2. Fallback to Local Docker PostgreSQL
     password = get_postgres_password()
     conn = psycopg2.connect(
         host="localhost",

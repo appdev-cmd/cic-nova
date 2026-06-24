@@ -2,8 +2,11 @@
 backend/venv/
 backend/uploads/
 backend/cic_nova.db
+backend/.env
 backend/__pycache__/
 *.pyc
+
+
 
 # Node / Frontend
 frontend/node_modules/
