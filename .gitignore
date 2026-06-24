@@ -3,6 +3,7 @@ backend/venv/
 backend/uploads/
 backend/cic_nova.db
 backend/.env
+backend/.env.cloud
 backend/__pycache__/
 *.pyc
 

@@ -37,6 +37,54 @@ function ProjectsModule({ apiBase, currentView, setCurrentView }) {
     qty: '1'
   });
 
+  // Selected door for detailed cost slide panel in calculations
+  const [selectedCalcDoor, setSelectedCalcDoor] = useState(null);
+  const [isCostPanelOpen, setIsCostPanelOpen] = useState(false);
+
+  // Project Cost Overhead Form
+  const [costForm, setCostForm] = useState({
+    pct_company: 2.0,
+    pct_contingency: 2.0,
+    pct_warranty: 1.5,
+    pct_other: 1.0
+  });
+
+  const handleSaveCostConfig = async (e) => {
+    e.preventDefault();
+    try {
+      const payload = {
+        name: activeProject.name,
+        description: activeProject.description,
+        pct_company: parseFloat(costForm.pct_company) || 0.0,
+        pct_contingency: parseFloat(costForm.pct_contingency) || 0.0,
+        pct_warranty: parseFloat(costForm.pct_warranty) || 0.0,
+        pct_other: parseFloat(costForm.pct_other) || 0.0
+      };
+      
+      const res = await fetch(`${apiBase}/projects/${activeProject.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        // Update activeProject locally
+        const updatedProject = { ...activeProject, ...data };
+        setActiveProject(updatedProject);
+        // Update projects list
+        setProjects(prev => prev.map(p => p.id === activeProject.id ? updatedProject : p));
+        alert("Lưu định mức chi phí dự án thành công!");
+      } else {
+        const err = await res.json();
+        alert(`Lỗi khi lưu định mức: ${err.detail || 'Lỗi không xác định'}`);
+      }
+    } catch (e) {
+      console.error("Error saving cost config:", e);
+      alert("Lỗi kết nối máy chủ khi lưu định mức.");
+    }
+  };
+
   // Upload file state
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadStatus, setUploadStatus] = useState({ type: '', message: '' });
@@ -234,6 +282,14 @@ function ProjectsModule({ apiBase, currentView, setCurrentView }) {
     setDetailTab('doors');
     setUploadStatus({ type: '', message: '' });
     setUploadFile(null);
+    
+    // Bind cost percentages
+    setCostForm({
+      pct_company: project.pct_company !== undefined && project.pct_company !== null ? project.pct_company : 2.0,
+      pct_contingency: project.pct_contingency !== undefined && project.pct_contingency !== null ? project.pct_contingency : 2.0,
+      pct_warranty: project.pct_warranty !== undefined && project.pct_warranty !== null ? project.pct_warranty : 1.5,
+      pct_other: project.pct_other !== undefined && project.pct_other !== null ? project.pct_other : 1.0
+    });
   };
 
   const handleAddDoor = async (e) => {
@@ -434,6 +490,13 @@ function ProjectsModule({ apiBase, currentView, setCurrentView }) {
                 Vị trí lắp cửa ({projectDoors.length})
               </button>
               <button 
+                className={`btn ${detailTab === 'cost-config' ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setDetailTab('cost-config')}
+                style={{ padding: '8px 16px', fontSize: '13px' }}
+              >
+                Định mức chi phí
+              </button>
+              <button 
                 className={`btn ${detailTab === 'opera-prices' ? 'btn-primary' : 'btn-secondary'}`}
                 onClick={() => setDetailTab('opera-prices')}
                 style={{ padding: '8px 16px', fontSize: '13px' }}
@@ -536,6 +599,198 @@ function ProjectsModule({ apiBase, currentView, setCurrentView }) {
             </div>
           )}
 
+          {/* TAB CONTENT 1.5: COST CONFIGURATION */}
+          {detailTab === 'cost-config' && (
+            <div style={{ maxWidth: '800px' }}>
+              <div style={{ marginBottom: '20px' }}>
+                <h3 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '6px' }}>Cấu hình tỷ lệ định mức các loại chi phí dự án</h3>
+                <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
+                  Thiết lập tỷ lệ % định mức chi phí quản lý doanh nghiệp và dự phòng rủi ro áp dụng riêng cho dự án này.
+                </p>
+              </div>
+
+              <form onSubmit={handleSaveCostConfig} className="glass-panel" style={{ padding: '28px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
+                  
+                  {/* Company Management Cost */}
+                  <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', padding: '16px', borderRadius: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{ background: 'rgba(37, 60, 120, 0.06)', padding: '6px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Settings2 size={16} style={{ color: 'var(--primary)' }} />
+                        </div>
+                        <span style={{ fontWeight: '600', fontSize: '13px' }}>Chi phí Công ty</span>
+                      </div>
+                      <span style={{ fontWeight: '700', color: 'var(--primary)', fontSize: '14px' }}>{costForm.pct_company}%</span>
+                    </div>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '11px', marginBottom: '12px', lineHeight: '1.4' }}>
+                      Chi phí vận hành, quản lý gián tiếp của văn phòng công ty phân bổ cho dự án.
+                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="10" 
+                        step="0.1"
+                        value={costForm.pct_company}
+                        onChange={(e) => setCostForm({ ...costForm, pct_company: parseFloat(e.target.value) || 0 })}
+                        style={{ flex: 1, accentColor: 'var(--primary)', cursor: 'pointer' }}
+                      />
+                      <input 
+                        type="number" 
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        value={costForm.pct_company}
+                        onChange={(e) => setCostForm({ ...costForm, pct_company: e.target.value === '' ? '' : parseFloat(e.target.value) || 0 })}
+                        className="form-control"
+                        style={{ width: '80px', padding: '4px 8px', textAlign: 'right' }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Contingency Cost */}
+                  <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', padding: '16px', borderRadius: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{ background: 'rgba(37, 60, 120, 0.06)', padding: '6px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <AlertTriangle size={16} style={{ color: 'var(--primary)' }} />
+                        </div>
+                        <span style={{ fontWeight: '600', fontSize: '13px' }}>Dự phòng phí</span>
+                      </div>
+                      <span style={{ fontWeight: '700', color: 'var(--primary)', fontSize: '14px' }}>{costForm.pct_contingency}%</span>
+                    </div>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '11px', marginBottom: '12px', lineHeight: '1.4' }}>
+                      Dự phòng cho các rủi ro biến động giá nguyên vật liệu, nhân công hoặc phát sinh khối lượng.
+                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="10" 
+                        step="0.1"
+                        value={costForm.pct_contingency}
+                        onChange={(e) => setCostForm({ ...costForm, pct_contingency: parseFloat(e.target.value) || 0 })}
+                        style={{ flex: 1, accentColor: 'var(--primary)', cursor: 'pointer' }}
+                      />
+                      <input 
+                        type="number" 
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        value={costForm.pct_contingency}
+                        onChange={(e) => setCostForm({ ...costForm, pct_contingency: e.target.value === '' ? '' : parseFloat(e.target.value) || 0 })}
+                        className="form-control"
+                        style={{ width: '80px', padding: '4px 8px', textAlign: 'right' }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Warranty Cost */}
+                  <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', padding: '16px', borderRadius: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{ background: 'rgba(37, 60, 120, 0.06)', padding: '6px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <CheckCircle size={16} style={{ color: 'var(--primary)' }} />
+                        </div>
+                        <span style={{ fontWeight: '600', fontSize: '13px' }}>Dự phòng bảo hành</span>
+                      </div>
+                      <span style={{ fontWeight: '700', color: 'var(--primary)', fontSize: '14px' }}>{costForm.pct_warranty}%</span>
+                    </div>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '11px', marginBottom: '12px', lineHeight: '1.4' }}>
+                      Chi phí dự phòng cho công tác bảo trì, sửa chữa bảo hành công trình sau nghiệm thu.
+                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="10" 
+                        step="0.1"
+                        value={costForm.pct_warranty}
+                        onChange={(e) => setCostForm({ ...costForm, pct_warranty: parseFloat(e.target.value) || 0 })}
+                        style={{ flex: 1, accentColor: 'var(--primary)', cursor: 'pointer' }}
+                      />
+                      <input 
+                        type="number" 
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        value={costForm.pct_warranty}
+                        onChange={(e) => setCostForm({ ...costForm, pct_warranty: e.target.value === '' ? '' : parseFloat(e.target.value) || 0 })}
+                        className="form-control"
+                        style={{ width: '80px', padding: '4px 8px', textAlign: 'right' }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Other Cost */}
+                  <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-color)', padding: '16px', borderRadius: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div style={{ background: 'rgba(37, 60, 120, 0.06)', padding: '6px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <DollarSign size={16} style={{ color: 'var(--primary)' }} />
+                        </div>
+                        <span style={{ fontWeight: '600', fontSize: '13px' }}>Chi phí khác</span>
+                      </div>
+                      <span style={{ fontWeight: '700', color: 'var(--primary)', fontSize: '14px' }}>{costForm.pct_other}%</span>
+                    </div>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '11px', marginBottom: '12px', lineHeight: '1.4' }}>
+                      Chi phí hành chính công trường, chi phí chung gián tiếp khác phục vụ thi công.
+                    </p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="10" 
+                        step="0.1"
+                        value={costForm.pct_other}
+                        onChange={(e) => setCostForm({ ...costForm, pct_other: parseFloat(e.target.value) || 0 })}
+                        style={{ flex: 1, accentColor: 'var(--primary)', cursor: 'pointer' }}
+                      />
+                      <input 
+                        type="number" 
+                        step="0.1"
+                        min="0"
+                        max="100"
+                        value={costForm.pct_other}
+                        onChange={(e) => setCostForm({ ...costForm, pct_other: e.target.value === '' ? '' : parseFloat(e.target.value) || 0 })}
+                        className="form-control"
+                        style={{ width: '80px', padding: '4px 8px', textAlign: 'right' }}
+                      />
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* Explanation Alert Box */}
+                <div style={{ 
+                  background: 'rgba(37, 60, 120, 0.05)', 
+                  border: '1px solid rgba(37, 60, 120, 0.15)', 
+                  padding: '16px', 
+                  borderRadius: '10px', 
+                  fontSize: '12px', 
+                  color: 'var(--primary)', 
+                  lineHeight: '1.5',
+                  marginBottom: '24px',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '10px'
+                }}>
+                  <Info size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+                  <div>
+                    <strong>Nguyên tắc tính toán trên file Excel:</strong> Các tỷ lệ phần trăm cấu hình ở trên sẽ được tự động điền vào cột F (định mức %) của sheet <code>CPHoanThien</code> khi xuất báo giá Excel. Excel sẽ tự động nhân tỷ lệ % này với Tổng doanh thu trước VAT ở dòng 129 để tính ra số tiền chi phí tương ứng ở cột G, đảm bảo báo giá chính xác và đồng bộ.
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <button type="submit" className="btn btn-primary" style={{ padding: '10px 24px' }}>
+                    Lưu định mức chi phí
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
           {/* TAB CONTENT 2: IMPORT OPERA */}
           {detailTab === 'opera-prices' && (
             <div style={{ maxWidth: '650px' }}>
@@ -630,7 +885,15 @@ function ProjectsModule({ apiBase, currentView, setCurrentView }) {
                     </thead>
                     <tbody>
                       {calcResults.map((item, index) => (
-                        <tr key={index}>
+                        <tr 
+                          key={index} 
+                          onClick={() => {
+                            setSelectedCalcDoor(item);
+                            setIsCostPanelOpen(true);
+                          }} 
+                          style={{ cursor: 'pointer', transition: 'background-color 0.2s' }}
+                          title="Click để xem chi tiết phân rã chi phí cửa"
+                        >
                           <td style={{ fontWeight: '600', color: 'var(--primary)' }}>{item.code}</td>
                           <td>{item.name} ({item.template_code})</td>
                           <td>{item.width} x {item.height}m</td>
@@ -645,45 +908,7 @@ function ProjectsModule({ apiBase, currentView, setCurrentView }) {
                 </div>
               </div>
 
-              {/* breakdown component cost visual analysis */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
-                {calcResults.map((item, idx) => (
-                  <div key={idx} className="glass-panel" style={{ padding: '20px' }}>
-                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                      <div style={{ width: '35px', height: '35px' }}>
-                        <DoorIllustration doorType={item.type} code={item.template_code} />
-                      </div>
-                      <div>
-                        <h4 style={{ fontSize: '14px', fontWeight: '700' }}>{item.code}</h4>
-                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{item.name}</span>
-                      </div>
-                    </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>Cấu phần Nhôm:</span>
-                        <span style={{ fontWeight: '600' }}>{formatCurrency(item.components.aluminum)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>Cấu phần Kính:</span>
-                        <span style={{ fontWeight: '600' }}>{formatCurrency(item.components.glass)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>Cấu phần Phụ kiện:</span>
-                        <span style={{ fontWeight: '600' }}>{formatCurrency(item.components.auxiliary)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>Cấu phần Nhân công:</span>
-                        <span style={{ fontWeight: '600' }}>{formatCurrency(item.components.labor)}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px', fontWeight: 'bold' }}>
-                        <span>Đơn giá 1 bộ:</span>
-                        <span style={{ color: 'var(--secondary)' }}>{formatCurrency(item.unit_price)}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
             </div>
           )}
         </div>
@@ -1185,6 +1410,135 @@ function ProjectsModule({ apiBase, currentView, setCurrentView }) {
             })()}
           </div>
         )}
+      </SlidePanel>
+      {/* Slide Panel for Detailed Cost Breakdown */}
+      <SlidePanel
+        isOpen={isCostPanelOpen}
+        onClose={() => setIsCostPanelOpen(false)}
+        title={selectedCalcDoor ? `Phân tích chi phí: ${selectedCalcDoor.code}` : ''}
+        subtitle={selectedCalcDoor ? `Mẫu: ${selectedCalcDoor.template_code} | Số lượng: ${selectedCalcDoor.qty} bộ` : ''}
+      >
+        {selectedCalcDoor && (() => {
+          const item = selectedCalcDoor;
+          const companyCost = item.unit_price * ((activeProject.pct_company ?? 2.0) / 100.0);
+          const contingencyCost = item.unit_price * ((activeProject.pct_contingency ?? 2.0) / 100.0);
+          const warrantyCost = item.unit_price * ((activeProject.pct_warranty ?? 1.5) / 100.0);
+          const otherCost = item.unit_price * ((activeProject.pct_other ?? 1.0) / 100.0);
+          const totalAllocatedCost = companyCost + contingencyCost + warrantyCost + otherCost;
+          const fullUnitPrice = item.unit_price + totalAllocatedCost;
+          
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* Door Illustration */}
+              <div style={{ height: '200px', background: '#f8fafc', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px' }}>
+                <div style={{ width: '160px', height: '160px' }}>
+                  <DoorIllustration doorType={item.type} code={item.template_code} width={item.width} height={item.height} />
+                </div>
+              </div>
+
+              {/* Basic Specs */}
+              <div className="glass-panel" style={{ padding: '16px', fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <h4 style={{ fontWeight: '700', color: 'var(--primary)', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px', fontSize: '13px' }}>Thông số cơ bản</h4>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Kích thước:</span>
+                  <span style={{ fontWeight: '600' }}>{item.width} x {item.height} m</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Diện tích 1 bộ:</span>
+                  <span style={{ fontWeight: '600' }}>{item.area.toFixed(2)} m²</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Số lượng:</span>
+                  <span style={{ fontWeight: '700' }}>{item.qty} bộ</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Tổng diện tích:</span>
+                  <span style={{ fontWeight: '600' }}>{item.total_area.toFixed(2)} m²</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Loại kính:</span>
+                  <span style={{ fontWeight: '500', fontSize: '11px', textAlign: 'right', maxWidth: '180px' }}>{item.glass_type}</span>
+                </div>
+              </div>
+
+              {/* Detailed Cost Table */}
+              <div className="glass-panel" style={{ padding: '0', overflow: 'hidden' }}>
+                <table className="data-table" style={{ fontSize: '12px', width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th>Cấu phần chi phí</th>
+                      <th style={{ textAlign: 'right' }}>Đơn giá/Bộ</th>
+                      <th style={{ textAlign: 'right' }}>Thành tiền ({item.qty} bộ)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {/* Direct Costs */}
+                    <tr>
+                      <td style={{ fontWeight: '600' }}>1. Vật liệu Nhôm</td>
+                      <td style={{ textAlign: 'right', fontWeight: '600' }}>{formatCurrency(item.components.aluminum)}</td>
+                      <td style={{ textAlign: 'right' }}>{formatCurrency(item.components.aluminum * item.qty)}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ fontWeight: '600' }}>2. Vật liệu Kính</td>
+                      <td style={{ textAlign: 'right', fontWeight: '600' }}>{formatCurrency(item.components.glass)}</td>
+                      <td style={{ textAlign: 'right' }}>{formatCurrency(item.components.glass * item.qty)}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ fontWeight: '600' }}>3. Phụ kiện & VT phụ</td>
+                      <td style={{ textAlign: 'right', fontWeight: '600' }}>{formatCurrency(item.components.auxiliary)}</td>
+                      <td style={{ textAlign: 'right' }}>{formatCurrency(item.components.auxiliary * item.qty)}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ fontWeight: '600' }}>4. Nhân công sản xuất, LĐ</td>
+                      <td style={{ textAlign: 'right', fontWeight: '600' }}>{formatCurrency(item.components.labor)}</td>
+                      <td style={{ textAlign: 'right' }}>{formatCurrency(item.components.labor * item.qty)}</td>
+                    </tr>
+                    
+                    {/* Subtotal Direct Cost */}
+                    <tr style={{ fontWeight: 'bold', background: 'rgba(37,60,120,0.04)', borderTop: '1px solid var(--border-color)' }}>
+                      <td>Đơn giá sản xuất gốc</td>
+                      <td style={{ textAlign: 'right', color: 'var(--primary)' }}>{formatCurrency(item.unit_price)}</td>
+                      <td style={{ textAlign: 'right' }}>{formatCurrency(item.unit_price * item.qty)}</td>
+                    </tr>
+
+                    {/* Allocated Costs */}
+                    <tr>
+                      <td style={{ paddingLeft: '15px', color: 'var(--text-muted)' }}>+ CP Công ty ({activeProject.pct_company ?? 2.0}%)</td>
+                      <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(companyCost)}</td>
+                      <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(companyCost * item.qty)}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ paddingLeft: '15px', color: 'var(--text-muted)' }}>+ Dự phòng phí ({activeProject.pct_contingency ?? 2.0}%)</td>
+                      <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(contingencyCost)}</td>
+                      <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(contingencyCost * item.qty)}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ paddingLeft: '15px', color: 'var(--text-muted)' }}>+ DP bảo hành ({activeProject.pct_warranty ?? 1.5}%)</td>
+                      <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(warrantyCost)}</td>
+                      <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(warrantyCost * item.qty)}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ paddingLeft: '15px', color: 'var(--text-muted)' }}>+ Chi phí khác ({activeProject.pct_other ?? 1.0}%)</td>
+                      <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(otherCost)}</td>
+                      <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(otherCost * item.qty)}</td>
+                    </tr>
+
+                    {/* Total Full Cost */}
+                    <tr style={{ fontWeight: 'bold', background: 'rgba(45,179,75,0.06)', borderTop: '2px solid var(--border-color)', fontSize: '13px' }}>
+                      <td style={{ color: '#1e8736' }}>Đơn giá full phân bổ</td>
+                      <td style={{ textAlign: 'right', color: '#1e8736' }}>{formatCurrency(fullUnitPrice)}</td>
+                      <td style={{ textAlign: 'right', color: '#1e8736' }}>{formatCurrency(fullUnitPrice * item.qty)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.4', background: 'rgba(0,0,0,0.01)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                * Báo cáo phân rã chi tiết giá thành sản xuất gốc và chi phí quản lý, dự phòng phân bổ tương ứng cho vị trí cửa này.
+              </div>
+            </div>
+          );
+        })()}
       </SlidePanel>
     </div>
   );

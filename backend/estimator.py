@@ -987,17 +987,55 @@ def generate_excel_report(project_id, template_path, output_path):
     # Update sheet CPHoanThien
     if 'CPHoanThien' in wb.sheetnames:
         ws_summary = wb['CPHoanThien']
-        for r in range(1, 100):
+        
+        # 1. Fetch cost overhead percentages from database
+        conn_cost = get_db_connection()
+        cursor_cost = conn_cost.cursor()
+        
+        p_company = 2.0
+        p_contingency = 2.0
+        p_warranty = 1.5
+        p_other = 1.0
+        
+        try:
+            cursor_cost.execute("SELECT pct_company, pct_contingency, pct_warranty, pct_other FROM projects WHERE id = %s", (project_id,))
+            proj_cost = cursor_cost.fetchone()
+            if proj_cost:
+                p_company = proj_cost['pct_company'] if proj_cost['pct_company'] is not None else 2.0
+                p_contingency = proj_cost['pct_contingency'] if proj_cost['pct_contingency'] is not None else 2.0
+                p_warranty = proj_cost['pct_warranty'] if proj_cost['pct_warranty'] is not None else 1.5
+                p_other = proj_cost['pct_other'] if proj_cost['pct_other'] is not None else 1.0
+        except Exception as e:
+            print(f"Warning: Could not fetch project cost percentages: {e}")
+        finally:
+            cursor_cost.close()
+            conn_cost.close()
+
+        # 2. Update summary sheet cells and look up cost rows dynamically
+        for r in range(1, 150):
             val = ws_summary.cell(row=r, column=2).value # DIỄN GIẢI
-            if val and 'DOANH THU' in str(val):
-                ws_summary.cell(row=r, column=7, value=f"=DETAIL!J{total_row}")
-            elif val and 'TỔNG CHI PHÍ' in str(val):
-                total_labor = sum(item['components']['labor'] * item['qty'] for item in calc_results)
-                total_al = sum(item['components']['aluminum'] * item['qty'] for item in calc_results)
-                total_gl = sum(item['components']['glass'] * item['qty'] for item in calc_results)
-                total_aux = sum(item['components']['auxiliary'] * item['qty'] for item in calc_results)
-                total_cost = total_labor + total_al + total_gl + total_aux
-                ws_summary.cell(row=r, column=7, value=total_cost)
+            if val:
+                val_str = str(val).strip().lower()
+                # Check for DOANH THU to map total revenue
+                if 'doanh thu' in val_str:
+                    ws_summary.cell(row=r, column=7, value=f"=DETAIL!J{total_row}")
+                # Check for TỔNG CHI PHÍ to map total production cost
+                elif 'tổng chi phí' in val_str or 'tong chi phi' in val_str:
+                    total_labor = sum(item['components']['labor'] * item['qty'] for item in calc_results)
+                    total_al = sum(item['components']['aluminum'] * item['qty'] for item in calc_results)
+                    total_gl = sum(item['components']['glass'] * item['qty'] for item in calc_results)
+                    total_aux = sum(item['components']['auxiliary'] * item['qty'] for item in calc_results)
+                    total_cost = total_labor + total_al + total_gl + total_aux
+                    ws_summary.cell(row=r, column=7, value=total_cost)
+                # Fill cost overhead percentages in Column F (Column 6)
+                elif 'chi phí công ty' in val_str or 'chi phi cong ty' in val_str:
+                    ws_summary.cell(row=r, column=6, value=p_company / 100.0)
+                elif 'dự phòng phí' in val_str or 'du phong phi' in val_str:
+                    ws_summary.cell(row=r, column=6, value=p_contingency / 100.0)
+                elif 'dự phòng bảo hành' in val_str or 'du phong bao hanh' in val_str:
+                    ws_summary.cell(row=r, column=6, value=p_warranty / 100.0)
+                elif 'chi phí khác' in val_str or 'chi phi khac' in val_str:
+                    ws_summary.cell(row=r, column=6, value=p_other / 100.0)
 
     # Update detail breakdown sheets (CSL-50.01, CSL-50.02, CSL-50.03...)
     for item in calc_results:

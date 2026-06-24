@@ -23,10 +23,40 @@ app.add_middleware(
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+def run_migrations():
+    print("Running database migrations...")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+        ALTER TABLE projects 
+        ADD COLUMN IF NOT EXISTS pct_company REAL DEFAULT 2.0,
+        ADD COLUMN IF NOT EXISTS pct_contingency REAL DEFAULT 2.0,
+        ADD COLUMN IF NOT EXISTS pct_warranty REAL DEFAULT 1.5,
+        ADD COLUMN IF NOT EXISTS pct_other REAL DEFAULT 1.0;
+        """)
+        conn.commit()
+        print("Database migrations completed successfully.")
+    except Exception as e:
+        conn.rollback()
+        print(f"Database migration error: {e}")
+    finally:
+        conn.close()
+
+run_migrations()
+
 # Pydantic models for request bodies
 class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
+
+class ProjectUpdate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    pct_company: Optional[float] = 2.0
+    pct_contingency: Optional[float] = 2.0
+    pct_warranty: Optional[float] = 1.5
+    pct_other: Optional[float] = 1.0
 
 class DoorCreate(BaseModel):
     code: str
@@ -129,6 +159,37 @@ def create_project(project: ProjectCreate):
         project_id = cursor.fetchone()[0]
         conn.commit()
         return {"id": project_id, "name": project.name, "description": project.description}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+@app.put("/api/projects/{project_id}")
+def update_project(project_id: int, project: ProjectUpdate):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+        UPDATE projects 
+        SET name = %s, 
+            description = %s, 
+            pct_company = %s, 
+            pct_contingency = %s, 
+            pct_warranty = %s, 
+            pct_other = %s
+        WHERE id = %s
+        """, (project.name, project.description, project.pct_company, project.pct_contingency, project.pct_warranty, project.pct_other, project_id))
+        conn.commit()
+        return {
+            "id": project_id, 
+            "name": project.name, 
+            "description": project.description,
+            "pct_company": project.pct_company,
+            "pct_contingency": project.pct_contingency,
+            "pct_warranty": project.pct_warranty,
+            "pct_other": project.pct_other
+        }
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
