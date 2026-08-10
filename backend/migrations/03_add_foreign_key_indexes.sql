@@ -1,0 +1,9 @@
+CREATE INDEX IF NOT EXISTS idx_accessory_formulas_template_id ON public.accessory_formulas(template_id);
+CREATE INDEX IF NOT EXISTS idx_material_price_book_items_material_code ON public.material_price_book_items(material_code);
+CREATE INDEX IF NOT EXISTS idx_profile_formulas_template_id ON public.profile_formulas(template_id);
+CREATE INDEX IF NOT EXISTS idx_project_doors_project_id ON public.project_doors(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_doors_template_id ON public.project_doors(template_id);
+CREATE INDEX IF NOT EXISTS idx_project_indirect_cost_config_id ON public.project_indirect_cost_selections(indirect_cost_config_id);
+CREATE INDEX IF NOT EXISTS idx_project_opera_mapped_material_id ON public.project_opera_materials(mapped_material_id);
+CREATE INDEX IF NOT EXISTS idx_projects_price_book_id ON public.projects(price_book_id);
+CREATE INDEX IF NOT EXISTS idx_templates_system_id ON public.templates(system_id);

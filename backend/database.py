@@ -39,8 +39,9 @@ def get_postgres_password():
     raise ValueError("POSTGRES_PASSWORD not found in Supabase .env file")
 
 def get_db_connection():
-    # 1. Try to load backend .env for Supabase Cloud first
-    env = load_backend_env()
+    # Process-level variables take precedence in containers/CI; backend/.env is
+    # only a local-development fallback.
+    env = {**load_backend_env(), **os.environ}
     if env.get('SUPABASE_DB_HOST'):
         # Connect to Supabase Cloud
         conn = psycopg2.connect(
@@ -49,6 +50,8 @@ def get_db_connection():
             database=env.get('SUPABASE_DB_NAME', 'postgres'),
             user=env['SUPABASE_DB_USER'],
             password=env['SUPABASE_DB_PASSWORD'],
+            sslmode=env.get('SUPABASE_DB_SSLMODE', 'require'),
+            connect_timeout=int(env.get('SUPABASE_DB_CONNECT_TIMEOUT', 10)),
             cursor_factory=psycopg2.extras.DictCursor
         )
         return conn

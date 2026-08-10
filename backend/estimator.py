@@ -1,5 +1,6 @@
 import os
 import re
+import io
 import pandas as pd
 import openpyxl
 import xml.etree.ElementTree as ET
@@ -219,19 +220,21 @@ def parse_opera_xml(project_id, file_path, cursor, conn):
                 VALUES (%s, %s, %s, %s)
                 """, (template_id, g_name, g_code, qty_per_set))
                 
+        cmp_desc = (comp.findtext("cmp_description") or comp.findtext("cmp_notes") or "").strip()
         cursor.execute("SELECT id FROM project_doors WHERE project_id = %s AND code = %s", (project_id, cmp_pos))
         door_row = cursor.fetchone()
         if door_row:
             cursor.execute("""
             UPDATE project_doors 
-            SET template_id = %s, width = %s, height = %s, qty = %s
+            SET template_id = %s, width = %s, height = %s, qty = %s,
+                description = COALESCE(NULLIF(%s, ''), description)
             WHERE id = %s
-            """, (template_id, width, height, qty, door_row[0]))
+            """, (template_id, width, height, qty, cmp_desc, door_row[0]))
         else:
             cursor.execute("""
-            INSERT INTO project_doors (project_id, code, template_id, width, height, qty)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """, (project_id, cmp_pos, template_id, width, height, qty))
+            INSERT INTO project_doors (project_id, code, template_id, width, height, qty, description)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (project_id, cmp_pos, template_id, width, height, qty, cmp_desc))
             
     return materials_inserted
 
@@ -426,19 +429,32 @@ def parse_typologies_excel_format(project_id, df, cursor, conn):
                 VALUES (%s, %s, %s, %s)
                 """, (template_id, m_name, m_code, qty_per_set))
                 
+        # Extract custom description from the typology group if present
+        typo_desc = None
+        for col_name in ['typology description', 'description', 'comments', 'notes', 'ghi chú', 'mô tả']:
+            matched_col = next((c for c in group.columns if str(c).lower().strip() == col_name), None)
+            if matched_col:
+                non_empty = group[group[matched_col].notna()][matched_col]
+                if not non_empty.empty:
+                    val = str(non_empty.iloc[0]).strip()
+                    if val and val.lower() != 'nan':
+                        typo_desc = val
+                        break
+
         cursor.execute("SELECT id FROM project_doors WHERE project_id = %s AND code = %s", (project_id, typo_name))
         door_row = cursor.fetchone()
         if door_row:
             cursor.execute("""
             UPDATE project_doors 
-            SET template_id = %s, width = %s, height = %s, qty = 1
+            SET template_id = %s, width = %s, height = %s, qty = 1,
+                description = COALESCE(NULLIF(%s, ''), description)
             WHERE id = %s
-            """, (template_id, door_w, door_h, door_row[0]))
+            """, (template_id, door_w, door_h, typo_desc, door_row[0]))
         else:
             cursor.execute("""
-            INSERT INTO project_doors (project_id, code, template_id, width, height, qty)
-            VALUES (%s, %s, %s, %s, %s, 1)
-            """, (project_id, typo_name, template_id, door_w, door_h))
+            INSERT INTO project_doors (project_id, code, template_id, width, height, qty, description)
+            VALUES (%s, %s, %s, %s, %s, 1, %s)
+            """, (project_id, typo_name, template_id, door_w, door_h, typo_desc))
             
     return materials_inserted
 
@@ -467,7 +483,6 @@ def eval_formula(formula_str, variables):
             return 0.0
             
     try:
-        # Safe eval using empty globals and locals
         result = eval(clean_formula, {"__builtins__": None}, {})
         return float(result)
     except Exception as e:
@@ -482,19 +497,65 @@ def calculate_project_estimates(project_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Get all project doors
+    cursor.execute("SELECT has_opera_bom, price_book_id, target_profit_margin, target_total_price FROM projects WHERE id = %s", (project_id,))
+    proj_row = cursor.fetchone()
+    has_opera_bom = proj_row['has_opera_bom'] if proj_row and 'has_opera_bom' in proj_row else False
+    price_book_id = proj_row['price_book_id'] if proj_row else None
+    target_profit_margin = proj_row['target_profit_margin'] if proj_row and proj_row['target_profit_margin'] is not None else 10.0
+    target_total_price = proj_row['target_total_price'] if proj_row and proj_row['target_total_price'] is not None else 0.0
+
+    if has_opera_bom:
+        cursor.execute("""
+        SELECT pd.*, pd.code as template_code, pd.template_name, '' as door_type,
+               0.0 as percent_aluminum, 0.0 as percent_glass, 0.0 as percent_accessories, 0.0 as percent_labor,
+               'Opera Glass' as glass_type, '' as accessory_brand, '' as system_name
+        FROM project_doors pd
+        WHERE pd.project_id = %s
+        """, (project_id,))
+        doors = [dict(row) for row in cursor.fetchall()]
+        for d in doors:
+            d['door_type'] = determine_door_type(d['code'], d['template_name'])
+    else:
+        cursor.execute("""
+        SELECT pd.*, t.code as template_code, t.name as template_name, t.type as door_type,
+               t.percent_aluminum, t.percent_glass, t.percent_accessories, t.percent_labor,
+               t.glass_type, t.accessory_brand, s.name as system_name
+        FROM project_doors pd
+        JOIN templates t ON pd.template_id = t.id
+        LEFT JOIN systems s ON t.system_id = s.id
+        WHERE pd.project_id = %s
+        """, (project_id,))
+        doors = [dict(row) for row in cursor.fetchall()]
+
     cursor.execute("""
-    SELECT pd.*, t.code as template_code, t.name as template_name, t.type as door_type,
-           t.percent_aluminum, t.percent_glass, t.percent_accessories, t.percent_labor,
-           t.glass_type, t.accessory_brand, s.name as system_name
-    FROM project_doors pd
-    JOIN templates t ON pd.template_id = t.id
-    LEFT JOIN systems s ON t.system_id = s.id
-    WHERE pd.project_id = %s
+    SELECT pics.cost_type, pics.custom_value, icc.option_name, icc.value_type, icc.value
+    FROM project_indirect_cost_selections pics
+    LEFT JOIN indirect_cost_configs icc ON pics.indirect_cost_config_id = icc.id
+    WHERE pics.project_id = %s
     """, (project_id,))
-    doors = cursor.fetchall()
-    
-    # Fetch material prices for this project
+    indirect_selections = {row['cost_type']: {
+        'custom_value': row['custom_value'],
+        'option_name': row['option_name'],
+        'value_type': row['value_type'],
+        'value': row['value']
+    } for row in cursor.fetchall()}
+
+    project_total_area = 0.0
+    for door in doors:
+        w = door['width']
+        h = door['height']
+        w_m = w if w < 10.0 else w / 1000.0
+        h_m = h if h < 10.0 else h / 1000.0
+        project_total_area += (w_m * h_m) * door['qty']
+
+    trans_sel = indirect_selections.get('transport')
+    project_transport_total = 0.0
+    if trans_sel:
+        if trans_sel['custom_value'] is not None:
+            project_transport_total = trans_sel['custom_value']
+        elif trans_sel['value'] is not None and trans_sel['value_type'] == 'fixed':
+            project_transport_total = trans_sel['value']
+
     cursor.execute("SELECT material_code, price, weight, material_name, unit FROM project_material_prices WHERE project_id = %s", (project_id,))
     prices = {row['material_code']: {
         'price': row['price'], 
@@ -503,7 +564,11 @@ def calculate_project_estimates(project_id):
         'unit': row['unit']
     } for row in cursor.fetchall()}
     
-    # Fetch global materials for system-wide fallback prices
+    book_prices = {}
+    if price_book_id:
+        cursor.execute("SELECT material_code, price FROM material_price_book_items WHERE price_book_id = %s", (price_book_id,))
+        book_prices = {row['material_code']: row['price'] for row in cursor.fetchall()}
+    
     cursor.execute("SELECT code, default_price, weight_per_m, name, unit FROM materials")
     global_materials = {row['code']: {
         'price': row['default_price'],
@@ -512,8 +577,22 @@ def calculate_project_estimates(project_id):
         'unit': row['unit']
     } for row in cursor.fetchall()}
     
+    materials_by_typo = {}
+    if has_opera_bom:
+        cursor.execute("""
+        SELECT pom.*, m.category as catalog_category
+        FROM project_opera_materials pom
+        LEFT JOIN materials m ON pom.mapped_material_id = m.id
+        WHERE pom.project_id = %s
+        """, (project_id,))
+        all_materials = cursor.fetchall()
+        for mat in all_materials:
+            typo = mat['typology_name']
+            if typo not in materials_by_typo:
+                materials_by_typo[typo] = []
+            materials_by_typo[typo].append(mat)
+            
     results = []
-    
     for door in doors:
         door_id = door['id']
         template_id = door['template_id']
@@ -521,249 +600,244 @@ def calculate_project_estimates(project_id):
         door_name = door['template_name']
         door_type = door['door_type']
         
-        # Dimensions (auto-detect meters vs millimeters)
         w = door['width']
         h = door['height']
         w_m = w if w < 10.0 else w / 1000.0
         h_m = h if h < 10.0 else h / 1000.0
         
-        w1 = door['width1']
-        h1 = door['height1']
+        w1 = door.get('width1')
+        h1 = door.get('height1')
         w1_m = w1 if (w1 is not None and w1 < 10.0) else (w1 / 1000.0 if w1 is not None else None)
         h1_m = h1 if (h1 is not None and h1 < 10.0) else (h1 / 1000.0 if h1 is not None else None)
-        
-        w2 = door['width2']
-        h2 = door['height2']
+        w2 = door.get('width2')
+        h2 = door.get('height2')
         w2_m = w2 if (w2 is not None and w2 < 10.0) else (w2 / 1000.0 if w2 is not None else None)
         h2_m = h2 if (h2 is not None and h2 < 10.0) else (h2 / 1000.0 if h2 is not None else None)
         
         qty_sets = door['qty']
-        
-        # Area (m2) of 1 unit
         area = w_m * h_m
         total_area = area * qty_sets
-        
         variables = {'W': w_m, 'H': h_m, 'W1': w1_m, 'H1': h1_m, 'W2': w2_m, 'H2': h2_m}
         
-        # 1. Calculate Aluminum Profiles
-        cursor.execute("SELECT * FROM profile_formulas WHERE template_id = %s", (template_id,))
-        profile_formulas = cursor.fetchall()
-        
-        profiles_cost = 0.0
-        profiles_weight = 0.0
-        profiles_details = []
-        
-        for pf in profile_formulas:
-            pf_code = pf['code']
-            pf_name = pf['name']
-            formula = pf['formula']
-            pf_qty = pf['qty']
+        if has_opera_bom:
+            profiles_cost = 0.0
+            profiles_weight = 0.0
+            profiles_details = []
+            acc_cost = 0.0
+            acc_details = []
+            glass_cost = 0.0
+            glass_qty_total = 0.0
+            other_cost = 0.0
             
-            # Get unit price & weight from imported Opera prices, fallback to global catalog, fallback to defaults
-            if pf_code in prices:
-                price_info = prices[pf_code]
-            elif pf_code in global_materials:
-                price_info = global_materials[pf_code]
-            else:
-                price_info = {'price': 98000.0, 'weight': pf['weight_per_m']}
+            door_mats = materials_by_typo.get(door_code, [])
+            for mat in door_mats:
+                cat = mat['catalog_category']
+                if not cat:
+                    code_lower = mat['code'].lower()
+                    name_lower = mat['name'].lower()
+                    unit_lower = mat['quantity_unit'].lower()
+                    if 'glass' in code_lower or 'kinh' in code_lower or 'kinh' in name_lower or 'gl' in code_lower:
+                        cat = 'glass'
+                    elif 'ac' in code_lower or 'pk' in code_lower or 'phu kien' in name_lower or 'accessory' in code_lower:
+                        cat = 'accessory'
+                    elif 'al' in code_lower or 'nhom' in name_lower or mat['unit_weight'] is not None or unit_lower in ['m', 'meter', 'kg']:
+                        cat = 'aluminum'
+                    else:
+                        cat = 'other'
                 
-            unit_price = price_info['price']
-            weight_per_m = price_info['weight'] if price_info['weight'] > 0 else pf['weight_per_m']
-            
-            length = eval_formula(formula, variables)
-            
-            # Total weight for this profile (qty * length * weight_per_m)
-            # Length in formula is in meters. If the formula gives mm, we divide by 1000.
-            # Usually in estimation sheet, H & W are in meters (e.g. W=1.2, H=0.6).
-            # So length in CSL-50.01 (0.59m) is already in meters.
-            # Formulas like 'H - 0.01' will result in meters if H is in meters.
-            weight_total = pf_qty * length * weight_per_m
-            
-            # Cost = Weight * Price (if priced by weight) or Qty * Length * Price (if priced by meter)
-            # In our data, unit price for WSAW-5010 is 116300 VND/kg
-            # Cost = weight_total * unit_price
-            cost = weight_total * unit_price
-            
-            profiles_cost += cost
-            profiles_weight += weight_total
-            
-            profiles_details.append({
-                'name': pf_name,
-                'code': pf_code,
-                'formula': formula,
-                'length': length,
-                'qty': pf_qty,
-                'weight_per_m': weight_per_m,
-                'total_weight': weight_total,
-                'unit_price': unit_price,
-                'total_price': cost
-            })
-            
-        # 2. Calculate Accessories
-        cursor.execute("SELECT * FROM accessory_formulas WHERE template_id = %s", (template_id,))
-        acc_formulas = cursor.fetchall()
-        
-        acc_cost = 0.0
-        acc_details = []
-        
-        for af in acc_formulas:
-            af_code = af['code']
-            af_name = af['name']
-            af_qty = af['qty']
-            
-            # Lookup price: check project prices, check global materials, fallback to 0
-            if af_code in prices:
-                price_info = prices[af_code]
-            elif af_code in global_materials:
-                price_info = global_materials[af_code]
-            else:
-                price_info = {'price': 0.0}
+                qty = mat['quantity']
+                unit_price = mat['unit_price'] if mat['unit_price'] is not None else 0.0
+                cost = qty * unit_price
                 
-            unit_price = price_info['price']
+                if cat == 'aluminum':
+                    profiles_cost += cost
+                    weight_per_m = mat['unit_weight'] or 0.0
+                    weight_total = qty * weight_per_m if mat['quantity_unit'].lower() in ['m', 'meter'] else (qty if mat['quantity_unit'].lower() == 'kg' else 0.0)
+                    profiles_weight += weight_total
+                    profiles_details.append({
+                        'name': mat['name'],
+                        'code': mat['code'],
+                        'formula': 'Opera BOM',
+                        'length': mat['width'] or qty,
+                        'qty': 1,
+                        'weight_per_m': weight_per_m,
+                        'total_weight': weight_total,
+                        'unit_price': unit_price,
+                        'total_price': cost
+                    })
+                elif cat == 'accessory':
+                    acc_cost += cost
+                    acc_details.append({
+                        'name': mat['name'],
+                        'code': mat['code'],
+                        'qty': qty,
+                        'unit_price': unit_price,
+                        'total_price': cost
+                    })
+                elif cat == 'glass':
+                    glass_cost += cost
+                    glass_qty_total += qty
+                else:
+                    other_cost += cost
             
-            cost = af_qty * unit_price
-            acc_cost += cost
-            
-            acc_details.append({
-                'name': af_name,
-                'code': af_code,
-                'qty': af_qty,
-                'unit_price': unit_price,
-                'total_price': cost
-            })
-            
-        # 3. Calculate Glass Cost (Estimated based on area)
-        # Usually, glass is estimated by m2.
-        # Find glass price from imported Opera file or default
-        glass_type = door['glass_type']
-        glass_price = 0.0
-        # In Opera file, glass is represented by e.g. 'KINH 6.38MM' or '12MM GLASS' or 'KINH DAN AN TOAN 8.38MM'
-        # Let's search our prices dict for a code matching glass type (case insensitive)
-        glass_code = None
-        for code in prices:
-            if 'glass' in code.lower() or 'kinh' in code.lower():
-                # Simple heuristic matching
-                if glass_type.lower() in code.lower() or code.lower() in glass_type.lower():
-                    glass_code = code
-                    break
-        
-        if glass_code:
-            glass_price = prices[glass_code]['price']
+            sum_materials = profiles_cost + glass_cost + acc_cost + other_cost
+            glass_type = 'Opera Glass'
+            glass_price = glass_cost / glass_qty_total if glass_qty_total > 0 else 0.0
+            glass_area = glass_qty_total
         else:
-            # Look in global materials catalog
-            for code in global_materials:
+            cursor.execute("SELECT * FROM profile_formulas WHERE template_id = %s", (template_id,))
+            profile_formulas = cursor.fetchall()
+            
+            profiles_cost = 0.0
+            profiles_weight = 0.0
+            profiles_details = []
+            for pf in profile_formulas:
+                pf_code = pf['code']
+                pf_name = pf['name']
+                formula = pf['formula']
+                pf_qty = pf['qty']
+                if pf_code in prices:
+                    unit_price = prices[pf_code]['price']
+                    weight_per_m = prices[pf_code]['weight'] if prices[pf_code]['weight'] > 0 else pf['weight_per_m']
+                elif pf_code in book_prices:
+                    unit_price = book_prices[pf_code]
+                    weight_per_m = global_materials.get(pf_code, {}).get('weight', pf['weight_per_m'])
+                elif pf_code in global_materials:
+                    unit_price = global_materials[pf_code]['price']
+                    weight_per_m = global_materials[pf_code]['weight'] if global_materials[pf_code]['weight'] > 0 else pf['weight_per_m']
+                else:
+                    unit_price = 98000.0
+                    weight_per_m = pf['weight_per_m']
+                
+                length = eval_formula(formula, variables)
+                weight_total = pf_qty * length * weight_per_m
+                cost = weight_total * unit_price
+                profiles_cost += cost
+                profiles_weight += weight_total
+                profiles_details.append({'name': pf_name, 'code': pf_code, 'formula': formula, 'length': length, 'qty': pf_qty, 'weight_per_m': weight_per_m, 'total_weight': weight_total, 'unit_price': unit_price, 'total_price': cost})
+                
+            cursor.execute("SELECT * FROM accessory_formulas WHERE template_id = %s", (template_id,))
+            acc_formulas = cursor.fetchall()
+            acc_cost = 0.0
+            acc_details = []
+            for af in acc_formulas:
+                af_code = af['code']
+                af_name = af['name']
+                af_qty = af['qty']
+                if af_code in prices: unit_price = prices[af_code]['price']
+                elif af_code in book_prices: unit_price = book_prices[af_code]
+                elif af_code in global_materials: unit_price = global_materials[af_code]['price']
+                else: unit_price = 0.0
+                cost = af_qty * unit_price
+                acc_cost += cost
+                acc_details.append({'name': af_name, 'code': af_code, 'qty': af_qty, 'unit_price': unit_price, 'total_price': cost})
+                
+            glass_type = door['glass_type']
+            glass_price = 0.0
+            glass_code = None
+            for code in prices:
                 if 'glass' in code.lower() or 'kinh' in code.lower():
                     if glass_type.lower() in code.lower() or code.lower() in glass_type.lower():
                         glass_code = code
                         break
-            if glass_code:
-                glass_price = global_materials[glass_code]['price']
+            if glass_code: glass_price = prices[glass_code]['price']
             else:
-                # Defaults based on glass type
-                if '8' in glass_type:
-                    glass_price = 240000.0  # VND/m2
-                elif '10' in glass_type:
-                    glass_price = 328000.0
-                elif '12' in glass_type:
-                    glass_price = 592900.0
+                for code in book_prices:
+                    if 'glass' in code.lower() or 'kinh' in code.lower():
+                        if glass_type.lower() in code.lower() or code.lower() in glass_type.lower():
+                            glass_code = code
+                            break
+                if glass_code: glass_price = book_prices[glass_code]
                 else:
-                    glass_price = 200000.0
-                
-        # Estimate glass area (normally slightly less than total door area, e.g. 80-90% or calculated)
-        # For simplicity of project, let's assume glass area ratio from template or just 85% of door area.
-        # Or look at target file: for CSL-50.01 (W=1.2, H=0.6, Area=0.72), glass area is 0.626583 m2 (which is ~87% of door area).
-        # We can calculate glass area using percent_glass or dynamic factors.
-        # Let's use 87% as default glass area ratio for estimating glass cost.
-        glass_area_ratio = 0.87
-        glass_area = area * glass_area_ratio
-        glass_cost = glass_area * glass_price
-        
-        # 4. Labor and Other Costs
-        # From target file sheet CSL-50.01:
-        # Nhôm: 47%, Kính: 9%, Vật tư phụ: 22%, Nhân công: 22%
-        # Let's compute based on percentages or direct formulas.
-        # In our case, we can compute direct materials cost = Aluminum Cost + Accessory Cost + Glass Cost.
-        # Let Materials = 1929575 (Aluminum) + 349557 (Glass) + 920699 (Vật tư phụ) = 3,200,000
-        # Actually, let's look at percent ratios:
-        # Aluminum cost = 1929575
-        # Glass cost = 349557
-        # Accessories/Vật tư phụ = 920699
-        # Labor = 903166
-        # Total Price = 4,103,000 VND (Unit price per m2) -> Total for 0.72m2 is 2,954,160 VND
-        # Let's establish a calculation flow:
-        # We have the raw Aluminum Cost, Glass Cost, Accessory Cost from formulas.
-        # We can calculate:
-        # - Vật tư phụ (Auxiliary materials - glue, foam, spacers, screws...) = 15% to 22% of total price
-        # - Nhân công (Labor - manufacture, installation) = 22% to 26% of total price
-        # If we use the exact percentages defined in templates:
-        # Let Total Cost per m2 = Raw Materials Cost / (1 - percent_auxiliary - percent_labor)
-        # For CSL-50.01: %Nhôm=47%, %Kính=9%, %Vật tư phụ=22%, %Nhân công=22%
-        # So Raw Materials (Nhôm + Kính) = 56% of Total Price.
-        # Thus, Total Price = (Aluminum Cost + Glass Cost) / 0.56
-        # Let's implement this percentage-based pricing engine!
-        pct_al = door['percent_aluminum'] / 100.0
-        pct_gl = door['percent_glass'] / 100.0
-        pct_acc = door['percent_accessories'] / 100.0
+                    for code in global_materials:
+                        if 'glass' in code.lower() or 'kinh' in code.lower():
+                            if glass_type.lower() in code.lower() or code.lower() in glass_type.lower():
+                                glass_code = code
+                                break
+                    if glass_code: glass_price = global_materials[glass_code]['price']
+                    else:
+                        if '8' in glass_type: glass_price = 240000.0
+                        elif '10' in glass_type: glass_price = 328000.0
+                        elif '12' in glass_type: glass_price = 592900.0
+                        else: glass_price = 200000.0
+                    
+            glass_area_ratio = 0.87
+            glass_area = area * glass_area_ratio
+            glass_cost = glass_area * glass_price
+            
+            sum_materials = profiles_cost + glass_cost + acc_cost
         pct_lab = door['percent_labor'] / 100.0
         
-        # Total material cost we calculated from formulas (aluminum + accessory + glass)
-        # Note: in template sheet, 'Vật tư phụ' include accessory brand Draho and ke, screws, glue...
-        # So we can calculate total price from Aluminum + Glass + Accessories.
-        # In CSL-50.01, Nhôm (47%) + Kính (9%) + Vật tư phụ (22%) = 78% of Total. Nhân công = 22%.
-        # Let's calculate: Total Price = (Aluminum Cost + Glass Cost + Accessory Cost) / (1 - pct_lab)
-        # Then, we back-calculate:
-        # - Labor Cost = Total Price * pct_lab
-        # - Auxiliary materials cost = Total Price * pct_acc
-        
-        sum_materials = profiles_cost + glass_cost + acc_cost
-        pct_materials = pct_al + pct_gl + pct_acc # usually 1 - pct_lab
-        
-        # Unit price of 1 bộ cửa (not per m2)
-        total_unit_cost = sum_materials / (pct_materials if pct_materials > 0 else 0.78)
-        
-        # Price per m2
-        price_per_m2 = total_unit_cost / area
-        
-        # Round price per m2 to nearest thousand (e.g. 4103000)
-        price_per_m2_rounded = round(price_per_m2, -3)
-        total_unit_cost_final = price_per_m2_rounded * area
-        
-        # Final values
+        if door.get('override_labor_cost') is not None:
+            labor_cost_per_unit = door['override_labor_cost']
+        else:
+            fab_sel = indirect_selections.get('fabrication')
+            if fab_sel:
+                if fab_sel['custom_value'] is not None: labor_cost_per_unit = fab_sel['custom_value'] * area
+                elif fab_sel['value_type'] == 'fixed': labor_cost_per_unit = fab_sel['value'] * area
+                elif fab_sel['value_type'] == 'percent': labor_cost_per_unit = (fab_sel['value'] / 100.0) * sum_materials
+                else: labor_cost_per_unit = pct_lab * (sum_materials / (1.0 - pct_lab) if pct_lab < 1.0 else sum_materials)
+            else: labor_cost_per_unit = pct_lab * (sum_materials / (1.0 - pct_lab) if pct_lab < 1.0 else sum_materials)
+
+        if door.get('override_installation_cost') is not None:
+            installation_cost_per_unit = door['override_installation_cost']
+        else:
+            inst_sel = indirect_selections.get('installation')
+            if inst_sel:
+                if inst_sel['custom_value'] is not None: installation_cost_per_unit = (inst_sel['custom_value'] / 100.0) * sum_materials
+                elif inst_sel['value_type'] == 'percent': installation_cost_per_unit = (inst_sel['value'] / 100.0) * sum_materials
+                elif inst_sel['value_type'] == 'fixed': installation_cost_per_unit = inst_sel['value'] * area
+                else: installation_cost_per_unit = 0.05 * sum_materials
+            else: installation_cost_per_unit = 0.05 * sum_materials
+
+        if door.get('override_transport_cost') is not None:
+            transport_cost_per_unit = door['override_transport_cost']
+        else:
+            if trans_sel:
+                if trans_sel['custom_value'] is not None:
+                    val = trans_sel['custom_value']
+                    transport_cost_per_unit = (val * area) / project_total_area if project_total_area > 0 else 0.0
+                elif trans_sel['value_type'] == 'fixed':
+                    val = trans_sel['value']
+                    transport_cost_per_unit = (val * area) / project_total_area if project_total_area > 0 else 0.0
+                elif trans_sel['value_type'] == 'percent': transport_cost_per_unit = (trans_sel['value'] / 100.0) * sum_materials
+                else: transport_cost_per_unit = 0.0
+            else: transport_cost_per_unit = 0.0
+
+        cont_sel = indirect_selections.get('contingency')
+        if cont_sel:
+            if cont_sel['custom_value'] is not None: contingency_cost_per_unit = (cont_sel['custom_value'] / 100.0) * sum_materials
+            elif cont_sel['value_type'] == 'percent': contingency_cost_per_unit = (cont_sel['value'] / 100.0) * sum_materials
+            elif cont_sel['value_type'] == 'fixed': contingency_cost_per_unit = cont_sel['value']
+            else: contingency_cost_per_unit = 0.02 * sum_materials
+        else: contingency_cost_per_unit = 0.02 * sum_materials
+            
+        cost_per_unit = sum_materials + labor_cost_per_unit + installation_cost_per_unit + transport_cost_per_unit + contingency_cost_per_unit
+        if door.get('price_per_m2') is not None and door['price_per_m2'] > 0:
+            price_per_m2_rounded = door['price_per_m2']
+            total_unit_cost_final = price_per_m2_rounded * area
+        else:
+            selling_price_raw = cost_per_unit * (1.0 + target_profit_margin / 100.0)
+            price_per_m2 = selling_price_raw / area if area > 0 else 0.0
+            price_per_m2_rounded = round(price_per_m2, -3)
+            total_unit_cost_final = price_per_m2_rounded * area
+            
         final_total_price = total_unit_cost_final * qty_sets
-        
-        # Back-calculate components for reporting
-        final_al_cost = total_unit_cost_final * pct_al
-        final_gl_cost = total_unit_cost_final * pct_gl
-        final_acc_cost = total_unit_cost_final * pct_acc
-        final_lab_cost = total_unit_cost_final * pct_lab
-        
         results.append({
-            'door_id': door_id,
-            'template_code': door['template_code'],
-            'code': door_code,
-            'name': door_name,
-            'type': door_type,
-            'width': w,
-            'height': h,
-            'qty': qty_sets,
-            'area': area,
-            'total_area': total_area,
-            'price_per_m2': price_per_m2_rounded,
-            'unit_price': total_unit_cost_final,
-            'total_price': final_total_price,
-            'glass_type': glass_type,
+            'door_id': door_id, 'template_code': door['template_code'], 'code': door_code, 'name': door_name,
+            'type': door_type, 'width': w, 'height': h, 'qty': qty_sets, 'area': area, 'total_area': total_area,
+            'price_per_m2': price_per_m2_rounded, 'unit_price': total_unit_cost_final, 'total_price': final_total_price,
+            'glass_type': glass_type, 'description': door.get('description') or '',
+            'override_transport_cost': door.get('override_transport_cost'),
+            'override_installation_cost': door.get('override_installation_cost'),
+            'override_labor_cost': door.get('override_labor_cost'),
+            'cost_per_unit': cost_per_unit, 'total_cost': cost_per_unit * qty_sets,
             'components': {
-                'aluminum': final_al_cost,
-                'glass': final_gl_cost,
-                'auxiliary': final_acc_cost,
-                'labor': final_lab_cost
+                'aluminum': profiles_cost, 'glass': glass_cost, 'auxiliary': acc_cost, 'materials_total': sum_materials,
+                'labor': labor_cost_per_unit, 'installation': installation_cost_per_unit, 'transport': transport_cost_per_unit, 'contingency': contingency_cost_per_unit
             },
-            'profiles': profiles_details,
-            'accessories': acc_details,
-            'glass_price_used': glass_price,
-            'glass_area_used': glass_area
+            'profiles': profiles_details, 'accessories': acc_details, 'glass_price_used': glass_price, 'glass_area_used': glass_area
         })
-        
     conn.close()
     return results
 
@@ -820,9 +894,14 @@ def get_door_description(item):
     desc = f"{name}\n- Nhóm hệ {system}\n- {glass_str}\n- {brand_str}"
     return desc
 
-def generate_excel_report(project_id, template_path, output_path):
+def generate_excel_report(project_id, template_path, output_path, split_output=False):
     """
     Generate Excel Report based on project calculations, copying template styles.
+
+    When split_output is True, output_path is ignored and the function
+    instead returns a (cost_wb, quote_wb) tuple of openpyxl Workbook objects
+    ("Tổng hợp chi phí" and "Báo giá" as two independent workbooks), or
+    (None, None) if the report could not be split.
     """
     print(f"Generating Excel Report from {template_path} to {output_path}")
     
@@ -830,7 +909,69 @@ def generate_excel_report(project_id, template_path, output_path):
     calc_results = calculate_project_estimates(project_id)
     if not calc_results:
         print("No doors to estimate.")
-        return False
+        return (None, None) if split_output else False
+
+    # Check if project has Opera BOM
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT has_opera_bom FROM projects WHERE id = %s", (project_id,))
+    proj_row = cursor.fetchone()
+    has_opera_bom = proj_row['has_opera_bom'] if proj_row and 'has_opera_bom' in proj_row else False
+    
+    opera_aluminum = []
+    opera_glass = []
+    opera_accessory = []
+    opera_gasket = []
+    opera_auxiliary = []
+    
+    if has_opera_bom:
+        cursor.execute("""
+        SELECT 
+            pom.code,
+            pom.name,
+            pom.description,
+            pom.quantity_unit,
+            SUM(pom.quantity) as total_quantity,
+            AVG(pom.unit_weight) as unit_weight,
+            pom.color,
+            pom.unit_price,
+            m.category as catalog_category
+        FROM project_opera_materials pom
+        LEFT JOIN materials m ON pom.mapped_material_id = m.id
+        WHERE pom.project_id = %s
+        GROUP BY pom.code, pom.name, pom.description, pom.quantity_unit, pom.color, pom.unit_price, m.category
+        ORDER BY pom.quantity_unit, pom.code
+        """, (project_id,))
+        opera_materials = [dict(row) for row in cursor.fetchall()]
+        
+        for mat in opera_materials:
+            cat = mat['catalog_category']
+            if not cat:
+                code_lower = mat['code'].lower()
+                name_lower = mat['name'].lower()
+                unit_lower = mat['quantity_unit'].lower()
+                if 'glass' in code_lower or 'kinh' in code_lower or 'kinh' in name_lower or 'gl' in code_lower:
+                    cat = 'glass'
+                elif 'gioang' in code_lower or 'gasket' in code_lower or 'gioăng' in name_lower:
+                    cat = 'gasket'
+                elif 'ac' in code_lower or 'pk' in code_lower or 'phu kien' in name_lower or 'accessory' in code_lower:
+                    cat = 'accessory'
+                elif 'al' in code_lower or 'nhom' in name_lower or mat['unit_weight'] is not None or unit_lower in ['m', 'meter', 'kg']:
+                    cat = 'aluminum'
+                else:
+                    cat = 'other'
+            
+            if cat == 'aluminum':
+                opera_aluminum.append(mat)
+            elif cat == 'glass':
+                opera_glass.append(mat)
+            elif cat == 'accessory':
+                opera_accessory.append(mat)
+            elif cat == 'gasket':
+                opera_gasket.append(mat)
+            else:
+                opera_auxiliary.append(mat)
+    conn.close()
         
     # Open template workbook
     wb = openpyxl.load_workbook(template_path)
@@ -936,7 +1077,9 @@ def generate_excel_report(project_id, template_path, output_path):
                 ws_detail.cell(row=current_row, column=1, value=item_idx)
                 
                 # Column B: Description
-                desc = get_door_description(item)
+                desc = item.get('description')
+                if not desc or not desc.strip():
+                    desc = get_door_description(item)
                 ws_detail.cell(row=current_row, column=2, value=desc)
                 # Enable wrap text for description
                 ws_detail.cell(row=current_row, column=2).alignment = openpyxl.styles.Alignment(wrap_text=True, vertical='center')
@@ -1103,13 +1246,24 @@ def generate_excel_report(project_id, template_path, output_path):
         conn_mats = get_db_connection()
         cursor_mats = conn_mats.cursor()
         project_prices = {}
+        book_prices = {}
         global_prices = {}
         
         try:
+            # Get project price book info
+            cursor_mats.execute("SELECT price_book_id FROM projects WHERE id = %s", (project_id,))
+            proj_row = cursor_mats.fetchone()
+            price_book_id = proj_row[0] if proj_row else None
+
             # Project-specific prices
             cursor_mats.execute("SELECT material_code, price FROM project_material_prices WHERE project_id = %s", (project_id,))
             project_prices = {row[0].strip().upper(): float(row[1]) for row in cursor_mats.fetchall() if row[0] and row[1] is not None}
             
+            # Price book prices
+            if price_book_id:
+                cursor_mats.execute("SELECT material_code, price FROM material_price_book_items WHERE price_book_id = %s", (price_book_id,))
+                book_prices = {row[0].strip().upper(): float(row[1]) for row in cursor_mats.fetchall() if row[0] and row[1] is not None}
+
             # Global default prices
             cursor_mats.execute("SELECT code, default_price FROM materials")
             global_prices = {row[0].strip().upper(): float(row[1]) for row in cursor_mats.fetchall() if row[0] and row[1] is not None}
@@ -1144,6 +1298,8 @@ def generate_excel_report(project_id, template_path, output_path):
             code_upper = str(mat_code).strip().upper()
             if code_upper in project_prices:
                 return project_prices[code_upper]
+            if code_upper in book_prices:
+                return book_prices[code_upper]
             if code_upper in global_prices:
                 return global_prices[code_upper]
             # Fallback to template-defined price (total / qty)
@@ -1191,51 +1347,122 @@ def generate_excel_report(project_id, template_path, output_path):
                     door_area = area_vach_kinh
                     
                 ws_summary.cell(row=r, column=5, value=door_area)
-                ws_summary.cell(row=r, column=7, value=door_area * rate)
+                ws_summary.cell(row=r, column=6, value=rate)
+                ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
                 
             # Aluminum cost rows
             elif r >= 25 and r <= 57: # Aluminum detailed items
-                mat_code = d['val'].strip().upper()
-                act_weight = project_aluminum.get(mat_code, 0.0)
-                price = get_actual_price(mat_code, d)
-                ws_summary.cell(row=r, column=5, value=act_weight)
-                ws_summary.cell(row=r, column=7, value=act_weight * price)
+                if has_opera_bom:
+                    idx = r - 25
+                    if idx < len(opera_aluminum):
+                        mat = opera_aluminum[idx]
+                        ws_summary.cell(row=r, column=2, value=mat['code'])
+                        ws_summary.cell(row=r, column=3, value=mat['name'])
+                        unit = 'Kg' if mat['unit_weight'] and mat['quantity_unit'] in ['m', 'meter'] else mat['quantity_unit']
+                        qty = mat['total_quantity'] * mat['unit_weight'] if (mat['unit_weight'] and mat['quantity_unit'] in ['m', 'meter']) else mat['total_quantity']
+                        ws_summary.cell(row=r, column=4, value=unit)
+                        ws_summary.cell(row=r, column=5, value=qty)
+                        ws_summary.cell(row=r, column=6, value=mat['unit_price'] or 0.0)
+                        ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
+                    else:
+                        for col in [2, 3, 4, 5, 6, 7]:
+                            ws_summary.cell(row=r, column=col, value=None)
+                else:
+                    mat_code = d['val'].strip().upper()
+                    act_weight = project_aluminum.get(mat_code, 0.0)
+                    price = get_actual_price(mat_code, d)
+                    ws_summary.cell(row=r, column=5, value=act_weight)
+                    ws_summary.cell(row=r, column=6, value=price)
+                    ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
                 
             # Glass cost rows
             elif r >= 59 and r <= 64: # Glass detailed items
-                mat_code = d['val'].strip().lower()
-                if mat_code in ['k8cl', 'k10cl', 'bk']:
-                    act_area = project_glass.get(mat_code, 0.0)
-                    price = get_actual_price(mat_code, d)
-                    ws_summary.cell(row=r, column=5, value=act_area)
-                    ws_summary.cell(row=r, column=7, value=act_area * price)
-                else: # Glass processing services (scale by scale_factor)
-                    act_qty = d['qty'] * scale_factor
-                    price = get_actual_price(mat_code, d)
-                    ws_summary.cell(row=r, column=5, value=act_qty)
-                    ws_summary.cell(row=r, column=7, value=act_qty * price)
+                if has_opera_bom:
+                    idx = r - 59
+                    if idx < len(opera_glass):
+                        mat = opera_glass[idx]
+                        ws_summary.cell(row=r, column=2, value=mat['code'])
+                        ws_summary.cell(row=r, column=3, value=mat['name'])
+                        ws_summary.cell(row=r, column=4, value=mat['quantity_unit'])
+                        ws_summary.cell(row=r, column=5, value=mat['total_quantity'])
+                        ws_summary.cell(row=r, column=6, value=mat['unit_price'] or 0.0)
+                        ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
+                    else:
+                        for col in [2, 3, 4, 5, 6, 7]:
+                            ws_summary.cell(row=r, column=col, value=None)
+                else:
+                    mat_code = d['val'].strip().lower()
+                    if mat_code in ['k8cl', 'k10cl', 'bk']:
+                        act_area = project_glass.get(mat_code, 0.0)
+                        price = get_actual_price(mat_code, d)
+                        ws_summary.cell(row=r, column=5, value=act_area)
+                        ws_summary.cell(row=r, column=6, value=price)
+                        ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
+                    else: # Glass processing services (scale by scale_factor)
+                        act_qty = d['qty'] * scale_factor
+                        price = get_actual_price(mat_code, d)
+                        ws_summary.cell(row=r, column=5, value=act_qty)
+                        ws_summary.cell(row=r, column=6, value=price)
+                        ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
                     
             # Accessory cost rows
             elif r >= 66 and r <= 80: # Accessories detailed items
-                mat_code = d['val'].strip().upper()
-                act_qty = project_accessories.get(mat_code, 0.0)
-                price = get_actual_price(mat_code, d)
-                ws_summary.cell(row=r, column=5, value=act_qty)
-                ws_summary.cell(row=r, column=7, value=act_qty * price)
+                if has_opera_bom:
+                    idx = r - 66
+                    if idx < len(opera_accessory):
+                        mat = opera_accessory[idx]
+                        ws_summary.cell(row=r, column=2, value=mat['code'])
+                        ws_summary.cell(row=r, column=3, value=mat['name'])
+                        ws_summary.cell(row=r, column=4, value=mat['quantity_unit'])
+                        ws_summary.cell(row=r, column=5, value=mat['total_quantity'])
+                        ws_summary.cell(row=r, column=6, value=mat['unit_price'] or 0.0)
+                        ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
+                    else:
+                        for col in [2, 3, 4, 5, 6, 7]:
+                            ws_summary.cell(row=r, column=col, value=None)
+                else:
+                    mat_code = d['val'].strip().upper()
+                    act_qty = project_accessories.get(mat_code, 0.0)
+                    price = get_actual_price(mat_code, d)
+                    ws_summary.cell(row=r, column=5, value=act_qty)
+                    ws_summary.cell(row=r, column=6, value=price)
+                    ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
                 
             # Gasket, auxiliary, transport (scale qty & total)
             elif (r >= 82 and r <= 83) or (r >= 85 and r <= 88) or r == 90:
-                act_qty = d['qty'] * scale_factor
-                price = get_actual_price(d['val'], d)
-                ws_summary.cell(row=r, column=5, value=act_qty)
-                ws_summary.cell(row=r, column=7, value=act_qty * price)
+                if has_opera_bom and r != 90:
+                    if r >= 82 and r <= 83:
+                        idx = r - 82
+                        mats_list = opera_gasket
+                    else:
+                        idx = r - 85
+                        mats_list = opera_auxiliary
+                        
+                    if idx < len(mats_list):
+                        mat = mats_list[idx]
+                        ws_summary.cell(row=r, column=2, value=mat['code'])
+                        ws_summary.cell(row=r, column=3, value=mat['name'])
+                        ws_summary.cell(row=r, column=4, value=mat['quantity_unit'])
+                        ws_summary.cell(row=r, column=5, value=mat['total_quantity'])
+                        ws_summary.cell(row=r, column=6, value=mat['unit_price'] or 0.0)
+                        ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
+                    else:
+                        for col in [2, 3, 4, 5, 6, 7]:
+                            ws_summary.cell(row=r, column=col, value=None)
+                else:
+                    act_qty = d['qty'] * scale_factor
+                    price = get_actual_price(d['val'], d)
+                    ws_summary.cell(row=r, column=5, value=act_qty)
+                    ws_summary.cell(row=r, column=6, value=price)
+                    ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
                 
             # Equipment cost (row 99) and management overhead (row 118) (scale qty & total)
             elif r == 99 or r == 118:
                 act_qty = d['qty'] * scale_factor
-                act_total = d['total'] * scale_factor
+                price = d['total'] / d['qty'] if d['qty'] > 0 else d['price']
                 ws_summary.cell(row=r, column=5, value=act_qty)
-                ws_summary.cell(row=r, column=7, value=act_total)
+                ws_summary.cell(row=r, column=6, value=price)
+                ws_summary.cell(row=r, column=7, value=f"=E{r}*F{r}")
 
     # Update detail breakdown sheets (CSL-50.01, CSL-50.02, CSL-50.03...)
     for item in calc_results:
@@ -1267,23 +1494,470 @@ def generate_excel_report(project_id, template_path, output_path):
         is_door_sheet = any(sheet_name.startswith(prefix) for prefix in ['CSL-', 'CDL-', 'CSB-', 'CDMQ-', 'VKT'])
         if is_door_sheet and sheet_name not in active_templates:
             sheets_to_remove.append(sheet_name)
-            
+
     for sheet_name in sheets_to_remove:
         try:
             wb.remove(wb[sheet_name])
             print(f"Removed unused sheet: {sheet_name}")
         except Exception as e:
             print(f"Error removing sheet {sheet_name}: {e}")
-                        
+
+    if split_output:
+        return _split_report_workbook(wb, total_row, calc_results)
+
     # Save output
     wb.save(output_path)
     print(f"Excel report saved successfully to {output_path}")
     return True
-                        
-    # Save output
+
+
+DOOR_SHEET_PREFIXES = ('CSL-', 'CDL-', 'CSB-', 'CDMQ-', 'VKT')
+
+
+def _split_report_workbook(wb, total_row, calc_results):
+    """
+    Split the already-built combined report workbook into two standalone
+    workbooks: a cost-summary workbook ("Tổng hợp chi phí") and a
+    customer-facing quote workbook ("Báo giá"), per the requirement that
+    these be two separate deliverable files.
+
+    Returns (cost_wb, quote_wb) as openpyxl Workbook objects, or (None, None)
+    if the required sheets are missing.
+    """
+    if 'DETAIL' not in wb.sheetnames:
+        return None, None
+
+    revenue_total = sum(float(item.get('total_price') or 0) for item in calc_results)
+
+    # Save the fully-built workbook to a temp buffer and reload it twice so
+    # each split copy has its own independent set of sheets/styles.
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    cost_wb = openpyxl.load_workbook(buf)
+    buf.seek(0)
+    quote_wb = openpyxl.load_workbook(buf)
+
+    # --- Cost summary workbook: keep CPHoanThien + door breakdown sheets,
+    # drop DETAIL and freeze the cross-sheet revenue formula to a static
+    # value so the workbook stays self-contained without DETAIL.
+    if 'CPHoanThien' in cost_wb.sheetnames:
+        ws_summary = cost_wb['CPHoanThien']
+        target_formula = f"=DETAIL!J{total_row}"
+        for row in ws_summary.iter_rows():
+            for cell in row:
+                if cell.value == target_formula:
+                    cell.value = revenue_total
+    if 'DETAIL' in cost_wb.sheetnames:
+        cost_wb.remove(cost_wb['DETAIL'])
+    if cost_wb.sheetnames:
+        cost_wb.active = 0
+
+    # --- Quote workbook: keep DETAIL only, drop CPHoanThien and per-door
+    # breakdown sheets so the customer receives just the quote table.
+    for sheet_name in list(quote_wb.sheetnames):
+        if sheet_name == 'CPHoanThien' or sheet_name.startswith(DOOR_SHEET_PREFIXES):
+            quote_wb.remove(quote_wb[sheet_name])
+    if 'DETAIL' in quote_wb.sheetnames:
+        quote_wb.active = quote_wb.sheetnames.index('DETAIL')
+
+    return cost_wb, quote_wb
+
+def consolidate_aluminum_orders(file_info_list: list, output_path: str) -> bool:
+    """
+    Consolidate aluminum profile orders from multiple Opera Excel files.
+    file_info_list: List of dicts, each containing:
+        - 'path': absolute path to the uploaded file
+        - 'original_name': original filename (e.g., 'Project_A_Opt.xls')
+    output_path: Path to save the consolidated Excel report.
+    """
+    import pandas as pd
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    print(f"Consolidating {len(file_info_list)} aluminum order files to {output_path}")
+
+    # Column helper mapping
+    def find_column(df, possible_names):
+        for col in df.columns:
+            if str(col).strip().lower() in [name.lower() for name in possible_names]:
+                return col
+        return None
+
+    possible_codes = ['Code', 'Part Number', 'Mã nhôm', 'Mã vật tư', 'Mã', 'PartNo', 'Item Code']
+    possible_lengths = ['Length', 'Chiều dài', 'L', 'Kích thước', 'Dài', 'Length(mm)', 'Cut Length']
+    possible_pieces = ['Pieces', 'Quantity', 'Qty', 'Số lượng', 'Sl', 'Số thanh', 'Pcs', 'QuantityUnit']
+    possible_colors = ['Color', 'Màu', 'Màu sắc', 'Sơn', 'Finish']
+    possible_descriptions = ['Description', 'Name', 'Mô tả', 'Tên', 'Ghi chú', 'Part Description']
+    possible_weights = ['Unit Weight', 'Weight', 'Trọng lượng', 'Đơn trọng', 'Tỷ trọng', 'Weight/m']
+    possible_units = ['QuantityUnit', 'Unit', 'Đơn vị', 'ĐVT']
+
+    consolidated_data = {} # Key: (code, length, color) -> Details
+    detailed_sources = []  # List of dicts to store trace details
+
+    for file_info in file_info_list:
+        file_path = file_info['path']
+        orig_name = file_info['original_name']
+        project_label = os.path.splitext(orig_name)[0]
+
+        try:
+            # Check extension to load correctly
+            file_ext = os.path.splitext(file_path)[1].lower()
+            if file_ext == '.xls':
+                df = pd.read_excel(file_path, engine='xlrd')
+            else:
+                df = pd.read_excel(file_path)
+        except Exception as e:
+            print(f"Error reading file {orig_name}: {e}")
+            continue
+
+        # Clean column names
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # Find mapped columns
+        code_col = find_column(df, possible_codes)
+        length_col = find_column(df, possible_lengths)
+        pieces_col = find_column(df, possible_pieces)
+        color_col = find_column(df, possible_colors)
+        desc_col = find_column(df, possible_descriptions)
+        weight_col = find_column(df, possible_weights)
+        unit_col = find_column(df, possible_units)
+
+        # We need at least Code and Pieces columns to proceed
+        if not code_col or not pieces_col:
+            print(f"File {orig_name} is missing core columns (Code or Pieces). Mapped columns: Code={code_col}, Pieces={pieces_col}. Skipping.")
+            continue
+
+        for idx, row in df.iterrows():
+            code = str(row.get(code_col, '')).strip()
+            if not code or code.lower() == 'nan' or 'thay the' in code.lower():
+                continue
+
+            # Parse quantity (Pieces)
+            try:
+                pieces = float(row.get(pieces_col, 0))
+            except:
+                pieces = 0.0
+            if pd.isna(pieces) or pieces <= 0:
+                continue
+
+            # Parse Length
+            try:
+                length = float(row.get(length_col, 0))
+            except:
+                length = 0.0
+            if pd.isna(length):
+                length = 0.0
+
+            # Check if this row is a profile (aluminum bar)
+            # Conditions: Unit is 'pc' or Length is a large number (typically mm: e.g., 5000, 5800, 6000)
+            # Accessories are usually short or have no length column.
+            # We filter for Length >= 1000 to capture actual profile bars (1m to 6m+)
+            unit_val = str(row.get(unit_col, 'pc')).strip().lower() if unit_col else 'pc'
+            
+            is_profile = False
+            if length >= 1000:
+                is_profile = True
+            elif unit_val == 'pc' and length >= 1000:
+                is_profile = True
+
+            if not is_profile:
+                continue
+
+            # Color
+            color = str(row.get(color_col, '')).strip() if color_col else ''
+            if not color or color.lower() == 'nan':
+                color = "Tiêu chuẩn"
+
+            # Description
+            desc = str(row.get(desc_col, '')).strip() if desc_col else ''
+            if not desc or desc.lower() == 'nan':
+                desc = "Thanh nhôm profile"
+
+            # Unit Weight
+            try:
+                unit_weight = float(row.get(weight_col, 0))
+            except:
+                unit_weight = 0.0
+            if pd.isna(unit_weight):
+                unit_weight = 0.0
+
+            key = (code, length, color)
+
+            # Store consolidated sum
+            if key not in consolidated_data:
+                consolidated_data[key] = {
+                    'code': code,
+                    'length': length,
+                    'color': color,
+                    'description': desc,
+                    'pieces': 0.0,
+                    'unit_weight': unit_weight,
+                    'sources': {}
+                }
+            
+            consolidated_data[key]['pieces'] += pieces
+            # Keep the first valid description or unit weight
+            if desc and consolidated_data[key]['description'] == "Thanh nhôm profile":
+                consolidated_data[key]['description'] = desc
+            if unit_weight > 0 and consolidated_data[key]['unit_weight'] == 0:
+                consolidated_data[key]['unit_weight'] = unit_weight
+
+            # Track source breakdown
+            consolidated_data[key]['sources'][project_label] = consolidated_data[key]['sources'].get(project_label, 0.0) + pieces
+
+            # Also save to detailed sources for the second sheet
+            detailed_sources.append({
+                'source_file': project_label,
+                'code': code,
+                'description': desc,
+                'length': length,
+                'color': color,
+                'pieces': pieces,
+                'unit_weight': unit_weight,
+                'total_weight': (pieces * length / 1000.0 * unit_weight) if unit_weight > 0 else 0.0
+            })
+
+    if not consolidated_data:
+        print("No valid aluminum profile data found to consolidate.")
+        return False, []
+
+    # Convert to list and sort
+    sorted_items = sorted(consolidated_data.values(), key=lambda x: (x['code'], -x['length'], x['color']))
+
+    # Create Workbook
+    wb = openpyxl.Workbook()
+    
+    # -------------------------------------------------------------------------
+    # Sheet 1: CONSOLIDATED ORDER (TỔNG HỢP ĐẶT HÀNG)
+    # -------------------------------------------------------------------------
+    ws_main = wb.active
+    ws_main.title = "TONG HOP DAT HANG"
+    ws_main.views.sheetView[0].showGridLines = True
+
+    # Typography & Palette
+    font_family = "Segoe UI"
+    navy_dark = "1B365D" # Primary Navy
+    green_accent = "2DB34B" # Accent Green
+    gray_light = "F1F5F9" # Zebra Row
+    border_color = "CBD5E1" # Slate Border
+
+    title_font = Font(name=font_family, size=16, bold=True, color=navy_dark)
+    subtitle_font = Font(name=font_family, size=10, italic=True, color="555555")
+    header_font = Font(name=font_family, size=11, bold=True, color="FFFFFF")
+    data_font = Font(name=font_family, size=11, color="000000")
+    total_font = Font(name=font_family, size=11, bold=True, color="000000")
+
+    header_fill = PatternFill(start_color=navy_dark, end_color=navy_dark, fill_type="solid")
+    zebra_fill = PatternFill(start_color=gray_light, end_color=gray_light, fill_type="solid")
+    total_fill = PatternFill(start_color="E2E8F0", end_color="E2E8F0", fill_type="solid")
+
+    thin_border = Border(
+        left=Side(style='thin', color=border_color),
+        right=Side(style='thin', color=border_color),
+        top=Side(style='thin', color=border_color),
+        bottom=Side(style='thin', color=border_color)
+    )
+    
+    double_bottom_border = Border(
+        left=Side(style='thin', color=border_color),
+        right=Side(style='thin', color=border_color),
+        top=Side(style='thin', color=border_color),
+        bottom=Side(style='double', color="000000")
+    )
+
+    # Write Titles
+    ws_main.cell(row=2, column=1, value="NOVALAND E&C").font = Font(name=font_family, size=12, bold=True, color=green_accent)
+    ws_main.cell(row=3, column=1, value="BẢNG TỔNG HỢP ĐẶT HÀNG VẬT TƯ NHÔM (OPERA CONSOLIDATED)").font = title_font
+    ws_main.cell(row=4, column=1, value=f"Gom từ {len(file_info_list)} file tối ưu hóa dự án | Ngày tổng hợp: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}").font = subtitle_font
+
+    # Headers
+    headers = [
+        "STT", "Mã Nhôm (Code)", "Mô Tả Vật Tư (Description)", 
+        "Chiều Dài (mm)", "Màu Sắc (Color)", "ĐVT", 
+        "Số Lượng (Thanh)", "Đơn Trọng (kg/m)", "Khối Lượng (kg)", 
+        "Nguồn Gốc Chi Tiết (Breakdown)"
+    ]
+    
+    header_row = 6
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws_main.cell(row=header_row, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = thin_border
+    
+    ws_main.row_dimensions[header_row].height = 28
+
+    # Write Data
+    current_row = 7
+    for idx, item in enumerate(sorted_items, 1):
+        ws_main.cell(row=current_row, column=1, value=idx).alignment = Alignment(horizontal="center")
+        
+        c_cell = ws_main.cell(row=current_row, column=2, value=item['code'])
+        c_cell.font = Font(name=font_family, size=11, bold=True)
+        c_cell.alignment = Alignment(horizontal="left")
+        
+        ws_main.cell(row=current_row, column=3, value=item['description']).alignment = Alignment(horizontal="left")
+        
+        l_cell = ws_main.cell(row=current_row, column=4, value=item['length'])
+        l_cell.number_format = "#,##0"
+        l_cell.alignment = Alignment(horizontal="right")
+        
+        ws_main.cell(row=current_row, column=5, value=item['color']).alignment = Alignment(horizontal="center")
+        ws_main.cell(row=current_row, column=6, value="Thanh").alignment = Alignment(horizontal="center")
+        
+        q_cell = ws_main.cell(row=current_row, column=7, value=item['pieces'])
+        q_cell.number_format = "#,##0"
+        q_cell.alignment = Alignment(horizontal="right")
+        
+        w_cell = ws_main.cell(row=current_row, column=8, value=item['unit_weight'])
+        w_cell.number_format = "0.000"
+        w_cell.alignment = Alignment(horizontal="right")
+        
+        # Formula for Total Weight = Pieces * Length / 1000 * Unit_Weight
+        tw_cell = ws_main.cell(row=current_row, column=9, value=f"=G{current_row}*D{current_row}/1000*H{current_row}")
+        tw_cell.number_format = "#,##0.00"
+        tw_cell.alignment = Alignment(horizontal="right")
+
+        # Source breakdown string: "ProjA: 5, ProjB: 10"
+        source_str = ", ".join([f"{k}: {int(v) if v.is_integer() else v} thanh" for k, v in item['sources'].items()])
+        ws_main.cell(row=current_row, column=10, value=source_str).alignment = Alignment(horizontal="left", wrap_text=True)
+
+        # Apply basic styles and borders
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws_main.cell(row=current_row, column=col_idx)
+            cell.font = data_font
+            cell.border = thin_border
+            # Zebra striping
+            if idx % 2 == 0:
+                cell.fill = zebra_fill
+                
+        ws_main.row_dimensions[current_row].height = 20
+        current_row += 1
+
+    # Write Total Row
+    total_row_idx = current_row
+    ws_main.cell(row=total_row_idx, column=1, value="Tổng cộng:").alignment = Alignment(horizontal="center")
+    ws_main.cell(row=total_row_idx, column=7, value=f"=SUM(G7:G{total_row_idx-1})").number_format = "#,##0"
+    ws_main.cell(row=total_row_idx, column=7).alignment = Alignment(horizontal="right")
+    ws_main.cell(row=total_row_idx, column=9, value=f"=SUM(I7:I{total_row_idx-1})").number_format = "#,##0.00"
+    ws_main.cell(row=total_row_idx, column=9).alignment = Alignment(horizontal="right")
+
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws_main.cell(row=total_row_idx, column=col_idx)
+        cell.font = total_font
+        cell.fill = total_fill
+        cell.border = double_bottom_border
+
+    ws_main.row_dimensions[total_row_idx].height = 24
+
+    # Auto-fit column widths
+    for col in ws_main.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            val_str = str(cell.value or '')
+            if cell.row < 5: # Skip titles for width calc
+                continue
+            if cell.column == 10: # Limit source breakdown column width to avoid extreme width
+                max_len = max(max_len, min(len(val_str), 40))
+            else:
+                max_len = max(max_len, len(val_str))
+        ws_main.column_dimensions[col_letter].width = max(max_len + 3, 10)
+
+    # -------------------------------------------------------------------------
+    # Sheet 2: DETAIL SOURCES (CHI TIẾT NGUỒN DỮ LIỆU)
+    # -------------------------------------------------------------------------
+    ws_sources = wb.create_sheet(title="CHI TIET NGUON")
+    ws_sources.views.sheetView[0].showGridLines = True
+
+    ws_sources.cell(row=2, column=1, value="CHI TIẾT NGUỒN DỮ LIỆU PHÂN BỔ").font = title_font
+    ws_sources.cell(row=3, column=1, value="Danh sách chi tiết các thanh nhôm được trích xuất từ từng file dự án đơn lẻ trước khi gộp.").font = subtitle_font
+
+    source_headers = [
+        "STT", "File Nguồn (Project)", "Mã Nhôm (Code)", "Mô Tả (Description)", 
+        "Chiều Dài (mm)", "Màu Sắc (Color)", "Số Lượng (Thanh)", 
+        "Đơn Trọng (kg/m)", "Khối Lượng (kg)"
+    ]
+
+    src_header_row = 5
+    for col_idx, h in enumerate(source_headers, 1):
+        cell = ws_sources.cell(row=src_header_row, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid") # Slate Header
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+        
+    ws_sources.row_dimensions[src_header_row].height = 24
+
+    src_curr_row = 6
+    for idx, row_data in enumerate(detailed_sources, 1):
+        ws_sources.cell(row=src_curr_row, column=1, value=idx).alignment = Alignment(horizontal="center")
+        ws_sources.cell(row=src_curr_row, column=2, value=row_data['source_file']).alignment = Alignment(horizontal="left")
+        ws_sources.cell(row=src_curr_row, column=3, value=row_data['code']).font = Font(name=font_family, size=11, bold=True)
+        ws_sources.cell(row=src_curr_row, column=4, value=row_data['description']).alignment = Alignment(horizontal="left")
+        
+        l_cell = ws_sources.cell(row=src_curr_row, column=5, value=row_data['length'])
+        l_cell.number_format = "#,##0"
+        l_cell.alignment = Alignment(horizontal="right")
+        
+        ws_sources.cell(row=src_curr_row, column=6, value=row_data['color']).alignment = Alignment(horizontal="center")
+        
+        q_cell = ws_sources.cell(row=src_curr_row, column=7, value=row_data['pieces'])
+        q_cell.number_format = "#,##0"
+        q_cell.alignment = Alignment(horizontal="right")
+        
+        w_cell = ws_sources.cell(row=src_curr_row, column=8, value=row_data['unit_weight'])
+        w_cell.number_format = "0.000"
+        w_cell.alignment = Alignment(horizontal="right")
+        
+        tw_cell = ws_sources.cell(row=src_curr_row, column=9, value=f"=G{src_curr_row}*E{src_curr_row}/1000*H{src_curr_row}")
+        tw_cell.number_format = "#,##0.00"
+        tw_cell.alignment = Alignment(horizontal="right")
+
+        for col_idx in range(1, len(source_headers) + 1):
+            cell = ws_sources.cell(row=src_curr_row, column=col_idx)
+            cell.font = data_font
+            cell.border = thin_border
+            if idx % 2 == 0:
+                cell.fill = zebra_fill
+                
+        ws_sources.row_dimensions[src_curr_row].height = 20
+        src_curr_row += 1
+
+    # Total row for sources sheet
+    src_total_row = src_curr_row
+    ws_sources.cell(row=src_total_row, column=1, value="Tổng cộng:").alignment = Alignment(horizontal="center")
+    ws_sources.cell(row=src_total_row, column=7, value=f"=SUM(G6:G{src_total_row-1})").number_format = "#,##0"
+    ws_sources.cell(row=src_total_row, column=7).alignment = Alignment(horizontal="right")
+    ws_sources.cell(row=src_total_row, column=9, value=f"=SUM(I6:I{src_total_row-1})").number_format = "#,##0.00"
+    ws_sources.cell(row=src_total_row, column=9).alignment = Alignment(horizontal="right")
+
+    for col_idx in range(1, len(source_headers) + 1):
+        cell = ws_sources.cell(row=src_total_row, column=col_idx)
+        cell.font = total_font
+        cell.fill = total_fill
+        cell.border = double_bottom_border
+
+    ws_sources.row_dimensions[src_total_row].height = 24
+
+    for col in ws_sources.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            val_str = str(cell.value or '')
+            if cell.row < 4:
+                continue
+            max_len = max(max_len, len(val_str))
+        ws_sources.column_dimensions[col_letter].width = max(max_len + 3, 10)
+
+    # Save
     wb.save(output_path)
-    print(f"Excel report saved successfully to {output_path}")
-    return True
+    print(f"Consolidated aluminum orders saved successfully to {output_path}")
+    return True, sorted_items
+
 
 if __name__ == "__main__":
     # Test script locally

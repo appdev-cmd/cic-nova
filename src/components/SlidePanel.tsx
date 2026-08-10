@@ -1,13 +1,24 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useId, useState, useRef } from 'react';
 import { X } from 'lucide-react';
 
-function SlidePanel({ isOpen, onClose, title, subtitle, children }) {
-  const [width, setWidth] = useState(850); // Mặc định rộng 850px để các cột định mức vừa vặn
-  const isResizing = useRef(false);
+interface SlidePanelProps {
+  isOpen: boolean;
+  onClose: () => void;
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+}
+
+const SlidePanel: React.FC<SlidePanelProps> = ({ isOpen, onClose, title, subtitle, children }) => {
+  const [width, setWidth] = useState<number>(850); // Mặc định rộng 850px để các cột định mức vừa vặn
+  const isResizing = useRef<boolean>(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
 
   // Listen for Escape key to close the panel
   useEffect(() => {
-    const handleKeyDown = (e) => {
+    const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && isOpen) {
         onClose();
       }
@@ -15,6 +26,40 @@ function SlidePanel({ isOpen, onClose, title, subtitle, children }) {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !panelRef.current) return;
+      const focusable = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', trapFocus);
+    return () => {
+      document.removeEventListener('keydown', trapFocus);
+      previousFocusRef.current?.focus();
+    };
+  }, [isOpen]);
 
   // Lock body scroll when panel is open
   useEffect(() => {
@@ -28,14 +73,14 @@ function SlidePanel({ isOpen, onClose, title, subtitle, children }) {
     };
   }, [isOpen]);
 
-  const startResize = (e) => {
+  const startResize = (e: React.MouseEvent<HTMLDivElement>) => {
     isResizing.current = true;
     document.addEventListener('mousemove', handleResize);
     document.addEventListener('mouseup', stopResize);
     document.body.style.userSelect = 'none'; // Ngăn bôi đen text khi kéo
   };
 
-  const handleResize = (e) => {
+  const handleResize = (e: MouseEvent) => {
     if (!isResizing.current) return;
     // Slide panel trượt từ bên phải, vì vậy width = window.innerWidth - e.clientX
     const newWidth = window.innerWidth - e.clientX;
@@ -61,10 +106,13 @@ function SlidePanel({ isOpen, onClose, title, subtitle, children }) {
       
       {/* Sliding Panel */}
       <div 
+        ref={panelRef}
         className={`slide-panel ${isOpen ? 'open' : ''}`} 
         style={{ width: `${width}px`, maxWidth: '100%' }}
         role="dialog" 
         aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
       >
         {/* Resize Handle */}
         <div 
@@ -75,7 +123,7 @@ function SlidePanel({ isOpen, onClose, title, subtitle, children }) {
 
         <div className="slide-panel-header">
           <div>
-            <h3 style={{ fontSize: '18px', fontWeight: '700', color: 'var(--text-main)' }}>{title}</h3>
+            <h3 id={titleId} style={{ fontSize: '18px', fontWeight: '700', color: 'var(--text-main)' }}>{title}</h3>
             {subtitle && <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>{subtitle}</p>}
           </div>
           <button 
@@ -95,6 +143,6 @@ function SlidePanel({ isOpen, onClose, title, subtitle, children }) {
       </div>
     </>
   );
-}
+};
 
 export default SlidePanel;

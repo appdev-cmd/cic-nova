@@ -5,6 +5,8 @@ import os
 import sys
 import re
 
+from database import load_backend_env
+
 def migrate_sqlite_to_cloud():
     sqlite_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cic_nova.db')
     print(f"Connecting to SQLite: {sqlite_path}")
@@ -12,14 +14,19 @@ def migrate_sqlite_to_cloud():
     lite_conn.row_factory = sqlite3.Row
     lite_cur = lite_conn.cursor()
     
-    cloud_host = "aws-1-ap-south-1.pooler.supabase.com"
-    cloud_password = "z3drlXVQifeWA6K3"
+    cloud_env = load_backend_env()
+    cloud_host = os.getenv("SUPABASE_DB_HOST") or cloud_env.get("SUPABASE_DB_HOST")
+    cloud_password = os.getenv("SUPABASE_DB_PASSWORD") or cloud_env.get("SUPABASE_DB_PASSWORD")
+    cloud_user = os.getenv("SUPABASE_DB_USER") or cloud_env.get("SUPABASE_DB_USER")
+    cloud_port = int(os.getenv("SUPABASE_DB_PORT") or cloud_env.get("SUPABASE_DB_PORT", 6543))
+    if not cloud_host or not cloud_password or not cloud_user:
+        raise RuntimeError("SUPABASE_DB_HOST, SUPABASE_DB_USER and SUPABASE_DB_PASSWORD are required.")
     print(f"Connecting to Supabase Cloud PostgreSQL via pooler at {cloud_host}...")
     cloud_conn = psycopg2.connect(
         host=cloud_host,
-        port=6543,
+        port=cloud_port,
         database="postgres",
-        user="postgres.jjzjfmxnmfvfxehejrui",
+        user=cloud_user,
         password=cloud_password,
         cursor_factory=psycopg2.extras.DictCursor
     )

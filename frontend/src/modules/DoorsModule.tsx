@@ -1,17 +1,120 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Edit2, Save, X, Settings2, ShieldCheck, ClipboardList, PenTool, LayoutGrid, List } from 'lucide-react';
+import { createApiFetch } from '../api';
+import { Plus, Trash2, Edit2, Save, X, Settings2, ShieldCheck, ClipboardList, PenTool, LayoutGrid, List, Search, Split, RotateCcw, Columns, Rows, RefreshCw, Check } from 'lucide-react';
 import DoorIllustration from '../components/DoorIllustration';
 import SlidePanel from '../components/SlidePanel';
+import { useFeedback } from '../components/FeedbackProvider';
+import { useUnsavedChanges } from '../hooks/useUnsavedChanges';
 
-function DoorsModule({ apiBase }) {
-  const [templates, setTemplates] = useState([]);
-  const [systems, setSystems] = useState([]);
+// Predefined Typologies for the visual catalog selector
+const TYPOLOGIES = [
+  {
+    code: 'CSL-50.01',
+    name: 'Cửa sổ lùa 2 cánh',
+    type: 'CỬA SỔ LÙA',
+    layout_json: {
+      id: 'root',
+      direction: 'vertical',
+      ratio: 1.0,
+      children: [
+        { id: 'pane_1', direction: 'leaf', type: 'sliding-left', ratio: 0.5 },
+        { id: 'pane_2', direction: 'leaf', type: 'sliding-right', ratio: 0.5 }
+      ]
+    }
+  },
+  {
+    code: 'CSL-50.02',
+    name: 'Cửa sổ lùa 2 cánh có ô fix',
+    type: 'CỬA SỔ LÙA',
+    layout_json: {
+      id: 'root',
+      direction: 'horizontal',
+      ratio: 1.0,
+      children: [
+        { id: 'top_fix', direction: 'leaf', type: 'fixed', ratio: 0.3, label: 'FIX' },
+        {
+          id: 'bottom_sliding',
+          direction: 'vertical',
+          ratio: 0.7,
+          children: [
+            { id: 'pane_1', direction: 'leaf', type: 'sliding-left', ratio: 0.5 },
+            { id: 'pane_2', direction: 'leaf', type: 'sliding-right', ratio: 0.5 }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    code: 'CDMQ-50.01',
+    name: 'Cửa đi mở quay 1 cánh',
+    type: 'CỬA ĐI MỞ QUAY',
+    layout_json: {
+      id: 'root',
+      direction: 'vertical',
+      ratio: 1.0,
+      children: [
+        { id: 'pane_1', direction: 'leaf', type: 'swing-left', ratio: 1.0 }
+      ]
+    }
+  },
+  {
+    code: 'CDMQ-50.02',
+    name: 'Cửa đi mở quay 2 cánh',
+    type: 'CỬA ĐI MỞ QUAY',
+    layout_json: {
+      id: 'root',
+      direction: 'vertical',
+      ratio: 1.0,
+      children: [
+        { id: 'pane_1', direction: 'leaf', type: 'swing-left', ratio: 0.5 },
+        { id: 'pane_2', direction: 'leaf', type: 'swing-right', ratio: 0.5 }
+      ]
+    }
+  },
+  {
+    code: 'CSMQ-50.01',
+    name: 'Cửa sổ mở hất 1 cánh',
+    type: 'CỬA SỔ MỞ QUAY',
+    layout_json: {
+      id: 'root',
+      direction: 'vertical',
+      ratio: 1.0,
+      children: [
+        { id: 'pane_1', direction: 'leaf', type: 'awning', ratio: 1.0 }
+      ]
+    }
+  }
+];
+
+function DoorsModule({ apiBase, token, user }: any) {
+  const fetch = createApiFetch(token);
+  const { notify, confirmAction } = useFeedback();
+  const alert = notify;
+  const isReadOnly = user?.role === 'viewer';
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [systems, setSystems] = useState<any[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
-  const [templateFormulas, setTemplateFormulas] = useState({ profiles: [], accessories: [] });
+  const [templateFormulas, setTemplateFormulas] = useState<any>({ profiles: [], accessories: [] });
+  
+  // Filter states
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterSystemId, setFilterSystemId] = useState('all');
+  const [filterType, setFilterType] = useState('all');
+
+  const filteredTemplates = templates.filter(t => {
+    const matchesSystem = filterSystemId === 'all' || t.system_id.toString() === filterSystemId;
+    const matchesType = filterType === 'all' || t.type === filterType;
+    const matchesSearch = 
+      t.code.toLowerCase().includes(searchQuery.toLowerCase()) || 
+      t.name.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesSystem && matchesType && matchesSearch;
+  });
+
+  const uniqueTypes = ['all', ...new Set(templates.map(t => t.type))];
   
   // Inline edit state for formulas
-  const [modifiedFormulas, setModifiedFormulas] = useState({});
-  const [modifiedAccessories, setModifiedAccessories] = useState({});
+  const [modifiedFormulas, setModifiedFormulas] = useState<any>({});
+  const [modifiedAccessories, setModifiedAccessories] = useState<any>({});
   
   // Tab within the detail panel
   const [detailTab, setDetailTab] = useState('spec'); // 'spec', 'illustration', 'bom'
@@ -22,8 +125,213 @@ function DoorsModule({ apiBase }) {
   const [viewMode, setViewMode] = useState('grid'); // 'grid' (Card View), 'list' (Table View)
   const [isPanelOpen, setIsPanelOpen] = useState(false);
 
+  // Visual Designer states
+  const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
+  const [layoutTree, setLayoutTree] = useState<any>(null);
+  const [selectedTypologyCode, setSelectedTypologyCode] = useState<string | null>(null);
+  const [showTypologyModal, setShowTypologyModal] = useState(false);
+  useUnsavedChanges(Boolean(showAddModal || showEditTemplateModal));
+
+  const activeTemplate = templates.find(t => t.id.toString() === selectedTemplateId);
+
+  // Tree manipulation utility helpers
+  const findNodeInTree = (node: any, targetId: string): any => {
+    if (!node) return null;
+    if (node.id === targetId) return node;
+    if (node.children) {
+      for (let child of node.children) {
+        const found = findNodeInTree(child, targetId);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  const getPaneType = (tree: any, paneId: string): string => {
+    const node = findNodeInTree(tree, paneId);
+    return node ? node.type || 'fixed' : 'fixed';
+  };
+
+  const updateNodeInTree = (node: any, targetId: string, updater: (n: any) => any): any => {
+    if (node.id === targetId) {
+      return updater(node);
+    }
+    if (node.children) {
+      return {
+        ...node,
+        children: node.children.map((child: any) => updateNodeInTree(child, targetId, updater))
+      };
+    }
+    return node;
+  };
+
+  const findParentNode = (root: any, childId: string): any => {
+    if (!root || !root.children) return null;
+    if (root.children.some((c: any) => c.id === childId)) return root;
+    for (let child of root.children) {
+      const p = findParentNode(child, childId);
+      if (p) return p;
+    }
+    return null;
+  };
+
+  // Dynamic CAD-to-BOM formulas generator
+  const generateFormulasFromLayout = (tree: any) => {
+    const profiles: any[] = [];
+    const accessories: any[] = [];
+    
+    // 1. Add Outer Frame
+    profiles.push({
+      name: "Khung bao ngang",
+      code: "KB-NGANG",
+      dimension_type: "W",
+      formula: "W",
+      qty: 2,
+      weight_per_m: 1.1
+    });
+    profiles.push({
+      name: "Khung bao đứng",
+      code: "KB-DUNG",
+      dimension_type: "H",
+      formula: "H",
+      qty: 2,
+      weight_per_m: 1.2
+    });
+
+    const traverse = (node: any, wExpr: string, hExpr: string) => {
+      if (!node) return;
+      
+      const direction = node.direction || 'leaf';
+      const children = node.children || [];
+      
+      if (direction === 'leaf') {
+        const type = node.type || 'fixed';
+        const leafId = (node.id || '').substring(0, 4).toUpperCase();
+        
+        if (type.startsWith('sliding')) {
+          profiles.push({
+            name: `Thanh cánh trơn (Lùa - Ô ${leafId})`,
+            code: "CANH-TRON",
+            dimension_type: "H",
+            formula: `${hExpr} - 0.047`,
+            qty: 2,
+            weight_per_m: 0.95
+          });
+          profiles.push({
+            name: `Thanh cánh móc (Lùa - Ô ${leafId})`,
+            code: "CANH-MOC",
+            dimension_type: "H",
+            formula: `${hExpr} - 0.047`,
+            qty: 1,
+            weight_per_m: 1.05
+          });
+          profiles.push({
+            name: `Thanh cánh bánh xe (Lùa - Ô ${leafId})`,
+            code: "CANH-BX",
+            dimension_type: "W",
+            formula: `${wExpr} - 0.015`,
+            qty: 2,
+            weight_per_m: 0.9
+          });
+          
+          accessories.push({
+            name: `Bánh xe đúp lùa (Cánh ${leafId})`,
+            code: "BX-DUP",
+            qty: 2.0
+          });
+          accessories.push({
+            name: `Khóa bán nguyệt (Cánh ${leafId})`,
+            code: "K-NGUYET",
+            qty: 1.0
+          });
+        } else if (type.startsWith('swing') || type === 'awning') {
+          profiles.push({
+            name: `Thanh cánh đứng (Mở - Ô ${leafId})`,
+            code: "CANH-QUAY-DUNG",
+            dimension_type: "H",
+            formula: `${hExpr} - 0.045`,
+            qty: 2,
+            weight_per_m: 1.3
+          });
+          profiles.push({
+            name: `Thanh cánh ngang (Mở - Ô ${leafId})`,
+            code: "CANH-QUAY-NGANG",
+            dimension_type: "W",
+            formula: `${wExpr} - 0.09`,
+            qty: 2,
+            weight_per_m: 1.3
+          });
+          
+          const isAwning = type === 'awning';
+          accessories.push({
+            name: isAwning ? `Bản lề chữ A (Cánh ${leafId})` : `Bản lề 3D (Cánh ${leafId})`,
+            code: isAwning ? "BAN-LE-A" : "BAN-LE-3D",
+            qty: isAwning ? 2.0 : 3.0
+          });
+          accessories.push({
+            name: `Bộ khóa tay nắm (Cánh ${leafId})`,
+            code: "KHOA-TAYNAM",
+            qty: 1.0
+          });
+        }
+        return;
+      }
+      
+      if (direction === 'horizontal') {
+        if (children.length > 1) {
+          profiles.push({
+            name: "Thanh đố chia ngang",
+            code: "DO-NGANG",
+            dimension_type: "W",
+            formula: wExpr,
+            qty: children.length - 1,
+            weight_per_m: 1.1
+          });
+        }
+        
+        children.forEach((child: any) => {
+          const r = child.ratio || (1 / children.length);
+          const childHExpr = hExpr === 'H' ? `H * ${r.toFixed(2)}` : `(${hExpr}) * ${r.toFixed(2)}`;
+          traverse(child, wExpr, childHExpr);
+        });
+      } else if (direction === 'vertical') {
+        if (children.length > 1) {
+          profiles.push({
+            name: "Thanh đố chia đứng",
+            code: "DO-DOC",
+            dimension_type: "H",
+            formula: hExpr,
+            qty: children.length - 1,
+            weight_per_m: 1.1
+          });
+        }
+        
+        children.forEach((child: any) => {
+          const r = child.ratio || (1 / children.length);
+          const childWExpr = wExpr === 'W' ? `W * ${r.toFixed(2)}` : `(${wExpr}) * ${r.toFixed(2)}`;
+          traverse(child, childWExpr, hExpr);
+        });
+      }
+    };
+
+    traverse(tree, "W", "H");
+    
+    // Consolidate accessories
+    const consolidatedAcc: any[] = [];
+    accessories.forEach((acc: any) => {
+      const existing = consolidatedAcc.find(a => a.code === acc.code);
+      if (existing) {
+        existing.qty += acc.qty;
+      } else {
+        consolidatedAcc.push({ ...acc });
+      }
+    });
+    
+    return { profiles, accessories: consolidatedAcc };
+  };
+
   // New Template form states
-  const [newTemplate, setNewTemplate] = useState({
+  const [newTemplate, setNewTemplate] = useState<any>({
     system_id: '',
     code: '',
     name: '',
@@ -37,7 +345,7 @@ function DoorsModule({ apiBase }) {
   });
 
   // Edit Template form states
-  const [editTemplate, setEditTemplate] = useState({
+  const [editTemplate, setEditTemplate] = useState<any>({
     id: '',
     system_id: '',
     code: '',
@@ -61,6 +369,239 @@ function DoorsModule({ apiBase }) {
       fetchTemplateFormulas(selectedTemplateId);
     }
   }, [selectedTemplateId]);
+
+  // Initialize layout tree when activeTemplate changes
+  useEffect(() => {
+    if (activeTemplate) {
+      if (activeTemplate.layout_json) {
+        try {
+          setLayoutTree(typeof activeTemplate.layout_json === 'string' 
+            ? JSON.parse(activeTemplate.layout_json) 
+            : activeTemplate.layout_json);
+        } catch (e) {
+          console.error("Error parsing template layout_json:", e);
+          setLayoutTree({ id: 'root', direction: 'leaf', type: 'fixed', ratio: 1.0 });
+        }
+      } else {
+        // Fallback to a single flat leaf based on template type
+        let initialType = 'fixed';
+        const tName = (activeTemplate.name || '').toUpperCase();
+        const tCode = (activeTemplate.code || '').toUpperCase();
+        if (tName.includes('LÙA') || tCode.startsWith('CSL') || tCode.startsWith('CDL')) {
+          initialType = 'sliding-left';
+        } else if (tName.includes('QUAY') || tCode.startsWith('CDMQ') || tCode.startsWith('CSMQ')) {
+          initialType = 'swing';
+        }
+        setLayoutTree({ id: 'root', direction: 'leaf', type: initialType, ratio: 1.0 });
+      }
+      setSelectedPaneId(null);
+    }
+  }, [activeTemplate]);
+
+  const handlePaneClick = (nodeId: string) => {
+    setSelectedPaneId(nodeId);
+  };
+
+  const handleSplitPane = (direction: 'horizontal' | 'vertical') => {
+    if (isReadOnly) return;
+    if (!selectedPaneId || !layoutTree) return;
+    
+    const newTree = updateNodeInTree(layoutTree, selectedPaneId, (node) => {
+      const id1 = `pane_${Math.random().toString(36).substring(2, 7)}`;
+      const id2 = `pane_${Math.random().toString(36).substring(2, 7)}`;
+      
+      const currentType = node.type || 'fixed';
+      
+      return {
+        ...node,
+        direction,
+        children: [
+          { id: id1, direction: 'leaf', type: currentType, ratio: 0.5 },
+          { id: id2, direction: 'leaf', type: 'fixed', ratio: 0.5 }
+        ]
+      };
+    });
+    
+    setLayoutTree(newTree);
+    setSelectedPaneId(null);
+  };
+
+  const handleChangePaneType = (newType: string) => {
+    if (isReadOnly) return;
+    if (!selectedPaneId || !layoutTree) return;
+    
+    const newTree = updateNodeInTree(layoutTree, selectedPaneId, (node) => {
+      return {
+        ...node,
+        type: newType,
+        label: newType === 'fixed' ? 'FIX' : undefined
+      };
+    });
+    
+    setLayoutTree(newTree);
+  };
+
+  const handleAdjustRatio = (ratio: number) => {
+    if (isReadOnly) return;
+    if (!selectedPaneId || !layoutTree) return;
+    
+    const parent = findParentNode(layoutTree, selectedPaneId);
+    if (!parent || !parent.children) return;
+    
+    const idx = parent.children.findIndex((c: any) => c.id === selectedPaneId);
+    if (idx === -1) return;
+    
+    const newTree = updateNodeInTree(layoutTree, parent.id, (node) => {
+      const newChildren = [...node.children];
+      
+      if (newChildren.length === 2) {
+        if (idx === 0) {
+          newChildren[0] = { ...newChildren[0], ratio: ratio };
+          newChildren[1] = { ...newChildren[1], ratio: 1.0 - ratio };
+        } else {
+          newChildren[1] = { ...newChildren[1], ratio: ratio };
+          newChildren[0] = { ...newChildren[0], ratio: 1.0 - ratio };
+        }
+      } else {
+        newChildren[idx] = { ...newChildren[idx], ratio: ratio };
+      }
+      
+      return {
+        ...node,
+        children: newChildren
+      };
+    });
+    
+    setLayoutTree(newTree);
+  };
+
+  const handleMergePane = () => {
+    if (isReadOnly) return;
+    if (!selectedPaneId || !layoutTree) return;
+    
+    const parent = findParentNode(layoutTree, selectedPaneId);
+    if (!parent) return;
+    
+    const newTree = updateNodeInTree(layoutTree, parent.id, (node) => {
+      return {
+        id: node.id,
+        direction: 'leaf',
+        type: 'fixed',
+        ratio: node.ratio || 1.0
+      };
+    });
+    
+    setLayoutTree(newTree);
+    setSelectedPaneId(null);
+  };
+
+  const handleResetLayout = async () => {
+    if (isReadOnly) return;
+    if (!await confirmAction("Bạn có chắc chắn muốn xóa toàn bộ thiết kế đố cửa và quay về dạng một ô cố định phẳng ban đầu?")) return;
+    setLayoutTree({ id: 'root', direction: 'leaf', type: 'fixed', ratio: 1.0 });
+    setSelectedPaneId(null);
+  };
+
+  const handleSaveLayoutOnly = async () => {
+    if (isReadOnly) return;
+    if (!activeTemplate || !layoutTree) return;
+    try {
+      const updatedTemplate = {
+        system_id: activeTemplate.system_id,
+        code: activeTemplate.code,
+        name: activeTemplate.name,
+        type: activeTemplate.type,
+        accessory_brand: activeTemplate.accessory_brand,
+        glass_type: activeTemplate.glass_type,
+        percent_aluminum: activeTemplate.percent_aluminum,
+        percent_glass: activeTemplate.percent_glass,
+        percent_accessories: activeTemplate.percent_accessories,
+        percent_labor: activeTemplate.percent_labor,
+        layout_json: JSON.stringify(layoutTree)
+      };
+      
+      const res = await fetch(`${apiBase}/templates/${activeTemplate.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedTemplate)
+      });
+      
+      if (res.ok) {
+        alert("Đã lưu thiết kế hình học cửa thành công!");
+        fetchTemplates();
+      } else {
+        alert("Lỗi khi lưu thiết kế.");
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSaveAndGenerateFormulas = async () => {
+    if (isReadOnly) return;
+    if (!activeTemplate || !layoutTree) return;
+    if (!await confirmAction("Hệ thống sẽ lưu thiết kế hình học đồng thời XÓA & TỰ ĐỘNG SINH MỚI toàn bộ công thức cắt nhôm, định mức phụ kiện cho cửa mẫu này dựa trên hình vẽ. Bạn có đồng ý?")) return;
+    
+    try {
+      // 1. First save layout_json
+      const updatedTemplate = {
+        system_id: activeTemplate.system_id,
+        code: activeTemplate.code,
+        name: activeTemplate.name,
+        type: activeTemplate.type,
+        accessory_brand: activeTemplate.accessory_brand,
+        glass_type: activeTemplate.glass_type,
+        percent_aluminum: activeTemplate.percent_aluminum,
+        percent_glass: activeTemplate.percent_glass,
+        percent_accessories: activeTemplate.percent_accessories,
+        percent_labor: activeTemplate.percent_labor,
+        layout_json: JSON.stringify(layoutTree)
+      };
+      
+      let res = await fetch(`${apiBase}/templates/${activeTemplate.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedTemplate)
+      });
+      
+      if (!res.ok) {
+        alert("Lỗi khi lưu thiết kế hình học.");
+        return;
+      }
+
+      // 2. Generate formulas
+      const generated = generateFormulasFromLayout(layoutTree);
+      
+      // 3. Post to formulas regenerate endpoint
+      const resBOM = await fetch(`${apiBase}/templates/${activeTemplate.id}/formulas/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(generated)
+      });
+      
+      if (resBOM.ok) {
+        alert("Đã lưu bản vẽ và tự động sinh định mức cắt nhôm & phụ kiện thành công!");
+        fetchTemplates();
+        fetchTemplateFormulas(activeTemplate.id);
+      } else {
+        const err = await resBOM.json();
+        alert(`Lỗi khi tự sinh định mức: ${err.detail}`);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSelectTypology = (typo: any) => {
+    setNewTemplate(prev => ({
+      ...prev,
+      code: typo.code,
+      name: typo.name,
+      type: typo.type
+    }));
+    setSelectedTypologyCode(typo.code);
+    setShowTypologyModal(false);
+  };
 
   const fetchSystems = async () => {
     try {
@@ -125,7 +666,14 @@ function DoorsModule({ apiBase }) {
 
   const handleCreateTemplate = async (e) => {
     e.preventDefault();
+    if (isReadOnly) return;
     if (!newTemplate.system_id || !newTemplate.code || !newTemplate.name) return;
+    const percentageTotal = Number(newTemplate.percent_aluminum) + Number(newTemplate.percent_glass)
+      + Number(newTemplate.percent_accessories) + Number(newTemplate.percent_labor);
+    if (Math.abs(percentageTotal - 100) > 0.01) {
+      alert(`Tổng cơ cấu giá hiện là ${percentageTotal}%. Vui lòng điều chỉnh về đúng 100%.`);
+      return;
+    }
 
     try {
       const res = await fetch(`${apiBase}/templates`, {
@@ -146,8 +694,23 @@ function DoorsModule({ apiBase }) {
       });
       if (res.ok) {
         const data = await res.json();
+        
+        // Seeding standard formulas if typology is selected
+        if (selectedTypologyCode) {
+          try {
+            await fetch(`${apiBase}/templates/${data.id}/apply-typology`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ typology_code: selectedTypologyCode })
+            });
+          } catch (err) {
+            console.error("Failed to seed typology formulas:", err);
+          }
+        }
+        
         alert("Tạo cửa mẫu thành công!");
         setShowAddModal(false);
+        setSelectedTypologyCode(null); // Reset selection
         setNewTemplate({
           system_id: systems[0]?.id.toString() || '',
           code: '',
@@ -174,6 +737,13 @@ function DoorsModule({ apiBase }) {
 
   const handleEditTemplateSubmit = async (e) => {
     e.preventDefault();
+    if (isReadOnly) return;
+    const percentageTotal = Number(editTemplate.percent_aluminum) + Number(editTemplate.percent_glass)
+      + Number(editTemplate.percent_accessories) + Number(editTemplate.percent_labor);
+    if (Math.abs(percentageTotal - 100) > 0.01) {
+      alert(`Tổng cơ cấu giá hiện là ${percentageTotal}%. Vui lòng điều chỉnh về đúng 100%.`);
+      return;
+    }
     try {
       const res = await fetch(`${apiBase}/templates/${editTemplate.id}`, {
         method: 'PUT',
@@ -204,7 +774,8 @@ function DoorsModule({ apiBase }) {
   };
 
   const handleDeleteTemplate = async (id, code) => {
-    if (!confirm(`Bạn có chắc chắn muốn xóa cửa mẫu: ${code}? Thao tác này cũng sẽ xóa toàn bộ định mức và công thức cắt nhôm của cửa này.`)) return;
+    if (isReadOnly) return;
+    if (!await confirmAction(`Bạn có chắc chắn muốn xóa cửa mẫu: ${code}? Thao tác này cũng sẽ xóa toàn bộ định mức và công thức cắt nhôm của cửa này.`)) return;
     try {
       const res = await fetch(`${apiBase}/templates/${id}`, {
         method: 'DELETE'
@@ -225,6 +796,7 @@ function DoorsModule({ apiBase }) {
 
   // Formulas profile handlers
   const handleAddProfile = async () => {
+    if (isReadOnly) return;
     if (!selectedTemplateId) return;
     try {
       const res = await fetch(`${apiBase}/templates/${selectedTemplateId}/profile-formulas`, {
@@ -239,7 +811,8 @@ function DoorsModule({ apiBase }) {
   };
 
   const handleDeleteProfile = async (id) => {
-    if (!confirm("Xóa thanh nhôm định hình này khỏi cửa mẫu?")) return;
+    if (isReadOnly) return;
+    if (!await confirmAction("Xóa thanh nhôm định hình này khỏi cửa mẫu?")) return;
     try {
       const res = await fetch(`${apiBase}/profile-formulas/${id}`, {
         method: 'DELETE'
@@ -253,6 +826,7 @@ function DoorsModule({ apiBase }) {
   };
 
   const handleUpdateProfileLocal = (id, field, value) => {
+    if (isReadOnly) return;
     setModifiedFormulas(prev => ({
       ...prev,
       [id]: { ...prev[id], [field]: value }
@@ -260,6 +834,7 @@ function DoorsModule({ apiBase }) {
   };
 
   const handleSaveProfiles = async () => {
+    if (isReadOnly) return;
     const list = Object.keys(modifiedFormulas).map(id => ({
       id: parseInt(id),
       name: modifiedFormulas[id].name,
@@ -289,6 +864,7 @@ function DoorsModule({ apiBase }) {
 
   // Accessories handlers
   const handleAddAccessory = async () => {
+    if (isReadOnly) return;
     if (!selectedTemplateId) return;
     try {
       const res = await fetch(`${apiBase}/templates/${selectedTemplateId}/accessory-formulas`, {
@@ -303,7 +879,8 @@ function DoorsModule({ apiBase }) {
   };
 
   const handleDeleteAccessory = async (id) => {
-    if (!confirm("Xóa dòng phụ kiện này?")) return;
+    if (isReadOnly) return;
+    if (!await confirmAction("Xóa dòng phụ kiện này?")) return;
     try {
       const res = await fetch(`${apiBase}/accessory-formulas/${id}`, {
         method: 'DELETE'
@@ -317,6 +894,7 @@ function DoorsModule({ apiBase }) {
   };
 
   const handleUpdateAccessoryLocal = (id, field, value) => {
+    if (isReadOnly) return;
     setModifiedAccessories(prev => ({
       ...prev,
       [id]: { ...prev[id], [field]: value }
@@ -324,6 +902,7 @@ function DoorsModule({ apiBase }) {
   };
 
   const handleSaveAccessories = async () => {
+    if (isReadOnly) return;
     const list = Object.keys(modifiedAccessories).map(id => ({
       id: parseInt(id),
       name: modifiedAccessories[id].name,
@@ -374,8 +953,6 @@ function DoorsModule({ apiBase }) {
     setIsPanelOpen(false);
   };
 
-  const activeTemplate = templates.find(t => t.id.toString() === selectedTemplateId);
-
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
@@ -401,22 +978,78 @@ function DoorsModule({ apiBase }) {
               <List size={16} /> Bảng
             </button>
           </div>
-          <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
-            <Plus size={16} /> Tạo Loại Cửa Mới
-          </button>
+          {!isReadOnly && (
+            <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
+              <Plus size={16} /> Tạo Loại Cửa Mới
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Search & Filter Bar */}
+      <div className="glass-panel" style={{ padding: '16px', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+          {/* Filter by System */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-muted)' }}>Hệ nhôm:</span>
+            <select 
+              value={filterSystemId} 
+              onChange={(e) => setFilterSystemId(e.target.value)}
+              className="form-control"
+              style={{ padding: '6px 12px', fontSize: '13px', width: '160px' }}
+            >
+              <option value="all">Tất cả hệ nhôm</option>
+              {systems.map(sys => (
+                <option key={sys.id} value={sys.id}>{sys.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Filter by Door Type */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-muted)' }}>Phân nhóm:</span>
+            <select 
+              value={filterType} 
+              onChange={(e) => setFilterType(e.target.value)}
+              className="form-control"
+              style={{ padding: '6px 12px', fontSize: '13px', width: '160px' }}
+            >
+              <option value="all">Tất cả loại cửa</option>
+              {uniqueTypes.filter(t => t !== 'all').map(t => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Search bar */}
+        <div style={{ position: 'relative', width: '300px' }}>
+          <Search size={16} style={{ position: 'absolute', left: '12px', top: '12px', color: 'var(--text-muted)' }} />
+          <input 
+            type="text" 
+            placeholder="Tìm theo mã hoặc tên cửa mẫu..." 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="form-control"
+            style={{ paddingLeft: '36px' }}
+          />
         </div>
       </div>
 
       {viewMode === 'grid' ? (
         <div className="door-grid">
-          {templates.map(tpl => (
+          {filteredTemplates.map(tpl => (
             <div 
               key={tpl.id}
               className="door-card glass-panel"
               onClick={() => handleSelectTemplate(tpl.id)}
+              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); handleSelectTemplate(tpl.id); } }}
+              role="button"
+              tabIndex={0}
+              aria-label={`Mở cửa mẫu ${tpl.code}: ${tpl.name}`}
             >
               <div className="door-card-thumb">
-                <DoorIllustration doorType={tpl.type} code={tpl.code} width="120" height="120" />
+                <DoorIllustration doorType={tpl.name} code={tpl.code} width="120" height="120" layoutJson={tpl.layout_json} />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', flex: 1, justifyContent: 'space-between' }}>
                 <div>
@@ -438,9 +1071,9 @@ function DoorsModule({ apiBase }) {
               </div>
             </div>
           ))}
-          {templates.length === 0 && (
+          {filteredTemplates.length === 0 && (
             <div className="glass-panel" style={{ gridColumn: '1 / -1', padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
-              Chưa có cửa mẫu nào.
+              Không tìm thấy cửa mẫu nào phù hợp với bộ lọc.
             </div>
           )}
         </div>
@@ -454,17 +1087,13 @@ function DoorsModule({ apiBase }) {
                 <th>Phân nhóm cửa</th>
                 <th>Hệ nhôm</th>
                 <th>Hãng phụ kiện</th>
-                <th style={{ width: '100px', textAlign: 'center' }}>Thao tác</th>
+                {!isReadOnly && <th style={{ width: '100px', textAlign: 'center' }}>Thao tác</th>}
               </tr>
             </thead>
             <tbody>
-              {templates.map(tpl => (
-                <tr 
-                  key={tpl.id} 
-                  onClick={() => handleSelectTemplate(tpl.id)} 
-                  style={{ cursor: 'pointer' }}
-                >
-                  <td style={{ fontWeight: '600', color: 'var(--primary)' }}>{tpl.code}</td>
+              {filteredTemplates.map(tpl => (
+                <tr key={tpl.id}>
+                  <td><button className="table-link" onClick={() => handleSelectTemplate(tpl.id)}>{tpl.code}</button></td>
                   <td style={{ fontWeight: '500' }}>{tpl.name}</td>
                   <td>{tpl.type}</td>
                   <td>
@@ -473,22 +1102,23 @@ function DoorsModule({ apiBase }) {
                     </span>
                   </td>
                   <td>{tpl.accessory_brand || 'Draho'}</td>
-                  <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                  {!isReadOnly && <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                     <button 
-                      className="btn btn-danger" 
+                      className="btn btn-danger icon-button" 
                       style={{ padding: '6px' }}
                       onClick={() => handleDeleteTemplate(tpl.id, tpl.code)}
                       title="Xóa cửa mẫu"
+                      aria-label={`Xóa cửa mẫu ${tpl.code}`}
                     >
                       <Trash2 size={13} />
                     </button>
-                  </td>
+                  </td>}
                 </tr>
               ))}
-              {templates.length === 0 && (
+              {filteredTemplates.length === 0 && (
                 <tr>
-                  <td colSpan="6" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
-                    Chưa có cửa mẫu nào.
+                    <td colSpan={isReadOnly ? 5 : 6} style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
+                    Không tìm thấy cửa mẫu nào phù hợp với bộ lọc.
                   </td>
                 </tr>
               )}
@@ -510,14 +1140,14 @@ function DoorsModule({ apiBase }) {
             {/* Header Actions */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#f8fafc', padding: '12px 16px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
               <span style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: '500' }}>Mã hệ thống: #{activeTemplate.id}</span>
-              <div style={{ display: 'flex', gap: '8px' }}>
+              {!isReadOnly && <div style={{ display: 'flex', gap: '8px' }}>
                 <button className="btn btn-secondary" style={{ padding: '8px 14px', fontSize: '13px' }} onClick={() => openEditModal(activeTemplate)}>
                   <Edit2 size={14} style={{ marginRight: '6px' }} /> Sửa thông số
                 </button>
                 <button className="btn btn-danger" style={{ padding: '8px 14px', fontSize: '13px' }} onClick={() => handleDeleteTemplate(activeTemplate.id, activeTemplate.code)}>
                   <Trash2 size={14} style={{ marginRight: '6px' }} /> Xóa cửa mẫu
                 </button>
-              </div>
+              </div>}
             </div>
 
             {/* Sub Tab buttons */}
@@ -534,7 +1164,7 @@ function DoorsModule({ apiBase }) {
                 onClick={() => setDetailTab('illustration')}
                 style={{ padding: '8px 14px', fontSize: '13px' }}
               >
-                <PenTool size={14} style={{ marginRight: '6px' }} /> Bản vẽ kỹ thuật SVG
+                <PenTool size={14} style={{ marginRight: '6px' }} /> 🎨 Thiết kế Đố & Bản vẽ
               </button>
               <button 
                 className={`btn ${detailTab === 'bom' ? 'btn-primary' : 'btn-secondary'}`}
@@ -625,23 +1255,180 @@ function DoorsModule({ apiBase }) {
               </div>
             )}
 
-            {/* DETAIL CONTENT: TAB 2 (ILLUSTRATION DRAWING) */}
+            {/* DETAIL CONTENT: TAB 2 (INTERACTIVE CAD DESIGNER) */}
             {detailTab === 'illustration' && (
-              <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: '20px' }}>
-                <div style={{ height: '320px', background: '#f8fafc', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '10px' }}>
-                  <DoorIllustration doorType={activeTemplate.type} code={activeTemplate.code} width="W" height="H" />
+              <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: '20px' }}>
+                {/* Left side: Canvas and info */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ height: '420px', background: '#f8fafc', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '10px', position: 'relative' }}>
+                    <DoorIllustration 
+                      doorType={activeTemplate.name} 
+                      code={activeTemplate.code} 
+                      width="W" 
+                      height="H" 
+                      layoutJson={layoutTree} 
+                      onPaneClick={handlePaneClick} 
+                      selectedPaneId={selectedPaneId || undefined} 
+                    />
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', background: '#f1f5f9', padding: '10px 14px', borderRadius: '8px', border: '1px solid #e2e8f0', lineHeight: '1.4' }}>
+                    <p style={{ fontWeight: 'bold', color: 'var(--primary)', marginBottom: '4px' }}>Mẹo thiết kế đố cửa:</p>
+                    Nhấp trực tiếp vào bất kỳ ô kính màu xanh nào trên hình vẽ để chọn ô đó. Sau đó dùng bảng bên phải để chia đố hoặc đổi kiểu cánh mở.
+                  </div>
                 </div>
                 
-                <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                  <h3 style={{ fontSize: '16px', fontWeight: '700', marginBottom: '10px', color: 'var(--primary)' }}>Bản vẽ kỹ thuật Vector SVG</h3>
-                  <p style={{ color: 'var(--text-muted)', fontSize: '13px', lineHeight: '1.6' }}>
-                    Bản vẽ biểu diễn trực quan cấu tạo của mẫu cửa {activeTemplate.code}. 
-                  </p>
-                  <ul style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: '12px', paddingLeft: '20px', lineHeight: '1.8' }}>
-                    <li>Khung bao ngoài được dựng chuẩn theo hệ nhôm {activeTemplate.system_name}.</li>
-                    <li>Kính được biểu diễn bằng lớp kính mờ gradient xanh cyan nhạt phản quang.</li>
-                    <li>Mũi tên chỉ hướng trượt đối với hệ cửa lùa, hoặc nét đứt biểu diễn hành trình mở đối với hệ cửa mở quay.</li>
-                  </ul>
+                {/* Right side: Controls */}
+                <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', paddingBottom: '12px', marginBottom: '16px' }}>
+                      <h3 style={{ fontSize: '14px', fontWeight: '700', color: 'var(--primary)', textTransform: 'uppercase' }}>Bộ điều khiển chia đố</h3>
+                      <button className="btn btn-danger" disabled={isReadOnly} style={{ padding: '4px 8px', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={handleResetLayout}>
+                        <RotateCcw size={11} /> Reset thiết kế
+                      </button>
+                    </div>
+
+                    {selectedPaneId ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                        {/* Selected info */}
+                        <div style={{ background: '#fffbeb', border: '1px solid #fef3c7', padding: '8px 12px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div>
+                            <span style={{ fontSize: '11px', color: '#b45309', fontWeight: '600' }}>Đang chọn ô:</span>
+                            <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#78350f', marginLeft: '6px' }}>#{selectedPaneId.substring(5) || selectedPaneId.substring(0, 5)}</span>
+                          </div>
+                          <button className="btn btn-secondary" style={{ padding: '2px 6px', fontSize: '10px' }} onClick={() => setSelectedPaneId(null)}>Bỏ chọn</button>
+                        </div>
+
+                        {/* Split actions */}
+                        <div>
+                          <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>Chia đố ô cửa này:</span>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button 
+                              type="button" 
+                              className="btn btn-secondary" 
+                              disabled={isReadOnly}
+                              style={{ flex: 1, padding: '8px', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+                              onClick={() => handleSplitPane('horizontal')}
+                            >
+                              <Rows size={13} /> Chia đôi ngang
+                            </button>
+                            <button 
+                              type="button" 
+                              className="btn btn-secondary" 
+                              disabled={isReadOnly}
+                              style={{ flex: 1, padding: '8px', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+                              onClick={() => handleSplitPane('vertical')}
+                            >
+                              <Columns size={13} /> Chia đôi đứng
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Opening type sashes */}
+                        <div>
+                          <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>Kiểu hoạt động của cánh:</span>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
+                            {[
+                              { value: 'fixed', label: 'Cố định (Fix)' },
+                              { value: 'sliding-left', label: 'Lùa trái (←)' },
+                              { value: 'sliding-right', label: 'Lùa phải (→)' },
+                              { value: 'swing-left', label: 'Quay trái' },
+                              { value: 'swing-right', label: 'Quay phải' },
+                              { value: 'awning', label: 'Mở hất' }
+                            ].map(opt => {
+                              const isCurrent = getPaneType(layoutTree, selectedPaneId) === opt.value;
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  className={`btn ${isCurrent ? 'btn-primary' : 'btn-secondary'}`}
+                                  disabled={isReadOnly}
+                                  style={{ padding: '6px 2px', fontSize: '10px', fontWeight: isCurrent ? 'bold' : 'normal' }}
+                                  onClick={() => handleChangePaneType(opt.value)}
+                                >
+                                  {opt.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Ratio adjuster */}
+                        {(() => {
+                          const parent = findParentNode(layoutTree, selectedPaneId);
+                          if (!parent) return null;
+                          
+                          const node = findNodeInTree(layoutTree, selectedPaneId);
+                          if (!node) return null;
+                          const currentRatio = node.ratio || 0.5;
+                          
+                          return (
+                            <div style={{ background: '#f8fafc', padding: '10px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '4px', fontWeight: '600' }}>
+                                <span>Tỷ lệ phân vùng này:</span>
+                                <span style={{ color: 'var(--primary)' }}>{(currentRatio * 100).toFixed(0)}%</span>
+                              </div>
+                              <input 
+                                type="range" 
+                                min="0.1" 
+                                max="0.9" 
+                                step="0.05"
+                                value={currentRatio}
+                                disabled={isReadOnly}
+                                onChange={(e) => handleAdjustRatio(parseFloat(e.target.value))}
+                                style={{ width: '100%', cursor: 'pointer' }}
+                              />
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                <span>10%</span>
+                                <span>50%</span>
+                                <span>90%</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Merge option */}
+                        {findParentNode(layoutTree, selectedPaneId) && (
+                          <button 
+                            type="button" 
+                            className="btn btn-secondary" 
+                            disabled={isReadOnly}
+                            style={{ padding: '6px 12px', fontSize: '11px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', color: '#dc2626', borderColor: '#fca5a5', background: '#fef2f2' }}
+                            onClick={handleMergePane}
+                          >
+                            <Trash2 size={12} /> Gộp đố (Xóa ô này)
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', border: '2px dashed #cbd5e1', borderRadius: '12px', padding: '30px', textAlign: 'center', color: 'var(--text-muted)', minHeight: '200px' }}>
+                        <PenTool size={28} style={{ color: '#94a3b8', marginBottom: '8px' }} />
+                        <p style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>Chưa chọn ô thiết kế</p>
+                        <p style={{ fontSize: '11px', maxWidth: '240px', lineHeight: '1.4' }}>Nhấp chuột trực tiếp vào các ô kính trên hình vẽ bên trái để kích hoạt trình chia đố.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Save actions */}
+                  <div style={{ display: 'flex', gap: '10px', borderTop: '1px solid #e2e8f0', paddingTop: '14px', marginTop: '10px' }}>
+                    <button 
+                      type="button" 
+                      className="btn btn-secondary" 
+                      disabled={isReadOnly}
+                      style={{ flex: 1, padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontSize: '12px' }}
+                      onClick={handleSaveLayoutOnly}
+                    >
+                      <Save size={14} /> Chỉ lưu bản vẽ
+                    </button>
+                    <button 
+                      type="button" 
+                      className="btn btn-primary" 
+                      disabled={isReadOnly}
+                      style={{ flex: 1.2, padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontSize: '12px' }}
+                      onClick={handleSaveAndGenerateFormulas}
+                    >
+                      <RefreshCw size={14} /> Lưu & Sinh Định mức (BOM)
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -654,10 +1441,10 @@ function DoorsModule({ apiBase }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <h3 style={{ fontSize: '15px', fontWeight: '700', color: 'var(--primary)' }}>Công thức cắt nhôm (Profiles)</h3>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                      <button className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={handleAddProfile}>
+                      <button className="btn btn-secondary" disabled={isReadOnly} style={{ padding: '6px 12px', fontSize: '12px' }} onClick={handleAddProfile}>
                         + Thêm profile
                       </button>
-                      <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={handleSaveProfiles}>
+                      <button className="btn btn-primary" disabled={isReadOnly} style={{ padding: '6px 12px', fontSize: '12px' }} onClick={handleSaveProfiles}>
                         Lưu công thức nhôm
                       </button>
                     </div>
@@ -735,7 +1522,7 @@ function DoorsModule({ apiBase }) {
                               />
                             </td>
                             <td style={{ textAlign: 'center' }}>
-                              <button className="btn btn-danger" style={{ padding: '4px' }} onClick={() => handleDeleteProfile(p.id)}>
+                              <button className="btn btn-danger" disabled={isReadOnly} style={{ padding: '4px' }} onClick={() => handleDeleteProfile(p.id)}>
                                 <Trash2 size={12} />
                               </button>
                             </td>
@@ -743,7 +1530,7 @@ function DoorsModule({ apiBase }) {
                         ))}
                         {templateFormulas.profiles.length === 0 && (
                           <tr>
-                            <td colSpan="7" style={{ textAlign: 'center', padding: '15px', color: 'var(--text-muted)' }}>Chưa cấu hình công thức nhôm nào.</td>
+                            <td colSpan={7} style={{ textAlign: 'center', padding: '15px', color: 'var(--text-muted)' }}>Chưa cấu hình công thức nhôm nào.</td>
                           </tr>
                         )}
                       </tbody>
@@ -756,10 +1543,10 @@ function DoorsModule({ apiBase }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <h3 style={{ fontSize: '15px', fontWeight: '700', color: 'var(--primary)' }}>Phụ kiện kim khí tiêu chuẩn (Accessories)</h3>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                      <button className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={handleAddAccessory}>
+                      <button className="btn btn-secondary" disabled={isReadOnly} style={{ padding: '6px 12px', fontSize: '12px' }} onClick={handleAddAccessory}>
                         + Thêm phụ kiện
                       </button>
-                      <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '12px' }} onClick={handleSaveAccessories}>
+                      <button className="btn btn-primary" disabled={isReadOnly} style={{ padding: '6px 12px', fontSize: '12px' }} onClick={handleSaveAccessories}>
                         Lưu định mức phụ kiện
                       </button>
                     </div>
@@ -804,7 +1591,7 @@ function DoorsModule({ apiBase }) {
                               />
                             </td>
                             <td style={{ textAlign: 'center' }}>
-                              <button className="btn btn-danger" style={{ padding: '4px' }} onClick={() => handleDeleteAccessory(a.id)}>
+                              <button className="btn btn-danger" disabled={isReadOnly} style={{ padding: '4px' }} onClick={() => handleDeleteAccessory(a.id)}>
                                 <Trash2 size={12} />
                               </button>
                             </td>
@@ -812,7 +1599,7 @@ function DoorsModule({ apiBase }) {
                         ))}
                         {templateFormulas.accessories.length === 0 && (
                           <tr>
-                            <td colSpan="4" style={{ textAlign: 'center', padding: '15px', color: 'var(--text-muted)' }}>Chưa cấu hình phụ kiện định mức nào.</td>
+                            <td colSpan={4} style={{ textAlign: 'center', padding: '15px', color: 'var(--text-muted)' }}>Chưa cấu hình phụ kiện định mức nào.</td>
                           </tr>
                         )}
                       </tbody>
@@ -842,6 +1629,29 @@ function DoorsModule({ apiBase }) {
             
             <form onSubmit={handleCreateTemplate}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px 0', fontSize: '14px' }}>
+                {/* Premium Banner to Select from Typology Library */}
+                <div style={{ background: 'rgba(37, 60, 120, 0.05)', border: '1px dashed var(--primary)', padding: '12px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <LayoutGrid size={20} style={{ color: 'var(--primary)' }} />
+                    <div>
+                      <span style={{ fontSize: '13px', fontWeight: 'bold', display: 'block', color: 'var(--primary)' }}>Thư viện Mẫu cửa Hệ thống</span>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                        {selectedTypologyCode 
+                          ? `✓ Đã chọn mẫu: ${selectedTypologyCode} (Sẽ tự điền định mức)` 
+                          : 'Chọn mẫu cửa có sẵn & tự sinh định mức nhanh.'}
+                      </span>
+                    </div>
+                  </div>
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary" 
+                    style={{ padding: '6px 12px', fontSize: '12px', borderColor: 'var(--primary)', color: 'var(--primary)', fontWeight: '600' }}
+                    onClick={() => setShowTypologyModal(true)}
+                  >
+                    {selectedTypologyCode ? 'Đổi mẫu cửa' : 'Mở Thư viện'}
+                  </button>
+                </div>
+
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                   <div>
                     <label className="form-label">Hệ nhôm *</label>
@@ -1091,6 +1901,69 @@ function DoorsModule({ apiBase }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Visual Typology Selector Modal */}
+      {showTypologyModal && (
+        <div className="modal-backdrop" style={{ zIndex: 1100 }}>
+          <div className="modal-content" style={{ maxWidth: '800px', width: '90%' }}>
+            <div className="modal-header">
+              <h3 style={{ fontSize: '18px', fontWeight: '700' }}>Thư viện Mẫu cửa Hệ thống</h3>
+              <button className="btn btn-secondary" style={{ padding: '6px' }} onClick={() => setShowTypologyModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div style={{ padding: '16px 0' }}>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '16px' }}>
+                Chọn một thiết kế có sẵn từ thư viện mẫu tiêu chuẩn của Nova E&C. Hệ thống sẽ tự động điền mã bản vẽ kỹ thuật hình học (layout) và sinh đầy đủ danh mục định mức cắt nhôm, phụ kiện kim khí mặc định cho bạn.
+              </p>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '16px', maxHeight: '450px', overflowY: 'auto', padding: '4px' }}>
+                {TYPOLOGIES.map(typo => (
+                  <div 
+                    key={typo.code}
+                    className="glass-panel hover-card"
+                    style={{ padding: '16px', display: 'flex', flexDirection: 'column', cursor: 'pointer', border: '1px solid #e2e8f0', borderRadius: '12px', transition: 'all 0.2s ease', background: '#ffffff' }}
+                    onClick={() => handleSelectTypology(typo)}
+                    onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); handleSelectTypology(typo); } }}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Chọn thiết kế ${typo.code}: ${typo.name}`}
+                  >
+                    <div style={{ height: '110px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '6px', marginBottom: '10px' }}>
+                      <div style={{ width: '100px', height: '100px' }}>
+                        <DoorIllustration 
+                          layoutJson={typo.layout_json} 
+                          width="W" 
+                          height="H" 
+                          doorType={typo.name} 
+                          code={typo.code} 
+                        />
+                      </div>
+                    </div>
+                    <div style={{ fontWeight: '700', fontSize: '14px', color: 'var(--primary)', marginBottom: '4px' }}>
+                      {typo.code}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-main)', fontWeight: '500', marginBottom: '12px', lineHeight: '1.4' }}>
+                      {typo.name}
+                    </div>
+                    <div style={{ marginTop: 'auto', fontSize: '11px', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ background: '#f1f5f9', padding: '2px 6px', borderRadius: '4px', fontWeight: '600' }}>{typo.type}</span>
+                      <span style={{ color: 'var(--primary)', fontWeight: '600' }}>Chọn mẫu →</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px', borderTop: '1px solid #e2e8f0', paddingTop: '12px' }}>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowTypologyModal(false)}>
+                Đóng thư viện
+              </button>
+            </div>
           </div>
         </div>
       )}

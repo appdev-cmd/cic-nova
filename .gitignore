@@ -1,3 +1,10 @@
+# Root Node / Vite Build
+node_modules/
+dist/
+*.log
+.env
+.env.local
+
 # Python / Backend
 backend/venv/
 backend/uploads/
@@ -7,11 +14,10 @@ backend/.env.cloud
 backend/__pycache__/
 *.pyc
 
-
-
 # Node / Frontend
 frontend/node_modules/
 frontend/dist/
+backups/
 frontend/.env
 frontend/.env.local
 frontend/.env.development.local

@@ -5,7 +5,7 @@ import psycopg2.extras
 
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from database import get_postgres_password
+from database import get_postgres_password, load_backend_env
 
 def migrate_to_cloud():
     print("Starting migration to Supabase Cloud...")
@@ -24,14 +24,18 @@ def migrate_to_cloud():
     local_cur = local_conn.cursor()
     
     # 2. Connect to Supabase Cloud PostgreSQL
-    cloud_host = "db.jjzjfmxnmfvfxehejrui.supabase.co"
-    cloud_password = "z3drlXVQifeWA6K3"
+    cloud_env = load_backend_env()
+    cloud_host = os.getenv("SUPABASE_DB_HOST") or cloud_env.get("SUPABASE_DB_HOST")
+    cloud_password = os.getenv("SUPABASE_DB_PASSWORD") or cloud_env.get("SUPABASE_DB_PASSWORD")
+    cloud_user = os.getenv("SUPABASE_DB_USER") or cloud_env.get("SUPABASE_DB_USER", "postgres")
+    if not cloud_host or not cloud_password:
+        raise RuntimeError("SUPABASE_DB_HOST and SUPABASE_DB_PASSWORD are required.")
     print(f"Connecting to Supabase Cloud PostgreSQL at {cloud_host}...")
     cloud_conn = psycopg2.connect(
         host=cloud_host,
         port=5432,
         database="postgres",
-        user="postgres",
+        user=cloud_user,
         password=cloud_password,
         cursor_factory=psycopg2.extras.DictCursor
     )
