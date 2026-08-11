@@ -117,20 +117,30 @@ export function parseOperaExcelArrayBuffer(buffer: ArrayBuffer): ParsedOperaResu
 
   const doorGroupMap: Record<string, { width: number; height: number; qty: number; desc: string }> = {};
 
-  rawData.forEach((row, idx) => {
-    const typoName = String(row['Typology Name'] || row['Typology'] || row['Cửa'] || row['Code'] || '').trim();
-    const code = String(row['Code'] || row['Mã'] || '').trim();
-    const desc = String(row['Description'] || row['Name'] || row['Mô tả'] || '').trim();
+  rawData.forEach((row) => {
+    const typoName = String(
+      row['Typology Name'] || 
+      row['Typology'] || 
+      row['Job'] || 
+      row['Cửa'] || 
+      row['Mẫu cửa'] || 
+      row['Name'] || 
+      row['Code'] || 
+      ''
+    ).trim();
+
+    const code = String(row['Code'] || row['Mã'] || row['Mã vật tư'] || row['ID'] || '').trim();
+    const desc = String(row['Description'] || row['Name'] || row['Mô tả'] || row['Tên vật tư'] || '').trim();
     const unit = String(row['QuantityUnit'] || row['Unit'] || row['Đơn vị'] || 'pc').trim();
 
-    const qty = parseFloat(row['Quantity'] || row['Số lượng'] || 0) || 0;
+    const qty = parseFloat(row['Pieces'] || row['Quantity'] || row['Số lượng'] || 0) || 0;
     const unitWeight = parseFloat(row['Unit Weight'] || row['Trọng lượng'] || 0) || 0;
-    const unitPrice = parseFloat(row['Price'] || row['Đơn giá'] || 0) || 0;
+    const unitPrice = parseFloat(row['Unit Price'] || row['Price'] || row['Đơn giá'] || 0) || 0;
 
-    const w = parseFloat(row['Width'] || row['Rộng'] || 0) || 0;
+    const w = parseFloat(row['Width'] || row['Length'] || row['Rộng'] || 0) || 0;
     const h = parseFloat(row['Height'] || row['Cao'] || 0) || 0;
 
-    if (code && code !== 'nan') {
+    if (code && code !== 'nan' && code !== 'undefined') {
       uniqueMaterialPrices[code] = {
         name: desc || code,
         unit,
@@ -139,14 +149,14 @@ export function parseOperaExcelArrayBuffer(buffer: ArrayBuffer): ParsedOperaResu
       };
     }
 
-    if (typoName && typoName !== 'nan') {
+    if (typoName && typoName !== 'nan' && typoName !== 'undefined') {
       if (!doorGroupMap[typoName]) {
-        doorGroupMap[typoName] = { width: w || 1000, height: h || 2000, qty: 1, desc: '' };
+        doorGroupMap[typoName] = { width: w > 0 ? w : 1000, height: h > 0 ? h : 2000, qty: 1, desc: '' };
       }
-      if (w > 0) doorGroupMap[typoName].width = w;
-      if (h > 0) doorGroupMap[typoName].height = h;
+      if (w > 0 && doorGroupMap[typoName].width === 1000) doorGroupMap[typoName].width = w;
+      if (h > 0 && doorGroupMap[typoName].height === 2000) doorGroupMap[typoName].height = h;
 
-      if (code && code !== 'nan') {
+      if (code && code !== 'nan' && code !== 'undefined') {
         materials.push({
           typology_name: typoName,
           code,

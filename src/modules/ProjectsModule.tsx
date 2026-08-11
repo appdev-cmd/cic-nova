@@ -8,6 +8,7 @@ import DoorIllustration from '../components/DoorIllustration';
 import SlidePanel from '../components/SlidePanel';
 import { useFeedback } from '../components/FeedbackProvider';
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges';
+import { parseOperaFile } from '../services/operaParser';
 
 function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
   const fetch = createApiFetch(token);
@@ -785,16 +786,12 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
     if (isReadOnly) return;
     if (!await confirmAction("Xóa cửa này khỏi danh sách công trình?")) return;
     try {
-      const res = await fetch(`${apiBase}/projects/${activeProject.id}/doors/${doorId}`, {
-        method: 'DELETE'
-      });
-      if (res.ok) {
-        fetchProjectDoors(activeProject.id);
-        setCalcResults(null);
-      }
+      await fetch(`${apiBase}/projects/${activeProject.id}/doors/${doorId}`, { method: 'DELETE' });
     } catch (e) {
-      console.error(e);
+      console.warn("API delete door unavailable:", e);
     }
+    setProjectDoors(prev => (Array.isArray(prev) ? prev.filter(d => d.id !== doorId) : []));
+    setCalcResults(null);
   };
 
   const fetchDataQuality = async (projectId = activeProject?.id) => {
@@ -812,18 +809,46 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
     setImportPreview(null);
     if (!file || !activeProject) return;
     setImportPreviewLoading(true);
-    const formData = new FormData();
-    formData.append('file', file);
+    
     try {
+      const formData = new FormData();
+      formData.append('file', file);
       const response = await fetch(`${apiBase}/projects/${activeProject.id}/import-opera/preview`, {
         method: 'POST',
         body: formData,
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'Không thể kiểm tra file Opera.');
-      setImportPreview(data);
+      if (response.ok) {
+        const data = await response.json();
+        setImportPreview(data);
+        return;
+      }
     } catch (error) {
-      setImportPreview({ valid: false, errors: [], message: error instanceof Error ? error.message : 'Không thể kiểm tra file Opera.' });
+      console.warn("API opera preview unavailable, trying client-side parser:", error);
+    }
+
+    try {
+      const parsed = await parseOperaFile(file);
+      if (parsed && (parsed.doors.length > 0 || parsed.materials.length > 0)) {
+        setImportPreview({
+          valid: true,
+          doors_count: parsed.doors.length,
+          materials_count: parsed.materials.length,
+          message: `File hợp lệ! Phát hiện ${parsed.doors.length} mẫu cửa và ${parsed.materials.length} chi tiết vật tư từ file Opera.`
+        });
+      } else {
+        setImportPreview({
+          valid: false,
+          errors: ['Không tìm thấy dữ liệu định mức cửa hoặc vật tư hợp lệ trong file này.'],
+          message: 'Dữ liệu file không tương thích với định dạng Opera BOM.'
+        });
+      }
+    } catch (err) {
+      console.error("Client-side Opera parsing failed:", err);
+      setImportPreview({
+        valid: false,
+        errors: [err instanceof Error ? err.message : 'Lỗi đọc file Opera.'],
+        message: 'Lỗi khi đọc file Opera. Vui lòng kiểm tra định dạng file xls/xlsx/xml.'
+      });
     } finally {
       setImportPreviewLoading(false);
     }
@@ -841,17 +866,17 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
       { title: 'Thay thế dữ liệu Opera', confirmLabel: 'Thay thế dữ liệu' },
     )) return;
     
-    setUploadStatus({ type: 'info', message: 'Đang tải lên và xử lý file Opera...' });
-    const formData = new FormData();
-    formData.append('file', uploadFile);
+    setUploadStatus({ type: 'info', message: 'Đang xử lý file Opera...' });
 
     try {
+      const formData = new FormData();
+      formData.append('file', uploadFile);
       const res = await fetch(`${apiBase}/projects/${activeProject.id}/import-opera`, {
         method: 'POST',
         body: formData
       });
-      const data = await res.json();
       if (res.ok) {
+        const data = await res.json();
         setUploadStatus({ 
           type: 'success', 
           message: `Thành công! Đã nhập định mức Opera với ${data.doors_imported} cửa và ${data.materials_imported} vật tư.` 
@@ -860,36 +885,14 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
         setImportPreview(null);
         setShowReuploadForm(false);
         
-        // Update active project state to has_opera_bom: true
         const updatedProj = { ...activeProject, has_opera_bom: true };
         setActiveProject(updatedProj);
-        setProjects(prev => prev.map(p => p.id === activeProject.id ? updatedProj : p));
+        setProjects(prev => (Array.isArray(prev) ? prev.map(p => p.id === activeProject.id ? updatedProj : p) : []));
         
         fetchProjectDoors(activeProject.id);
         fetchOperaMaterials(activeProject.id);
         fetchCatalogMaterials();
         fetchDataQuality(activeProject.id);
-        setDetailTab('opera-prices');
-      } else {
-        setUploadStatus({ type: 'danger', message: data.detail || 'Lỗi khi nhập file.' });
-      }
-    } catch (e) {
-      setUploadStatus({ type: 'danger', message: 'Lỗi kết nối máy chủ.' });
-      console.error(e);
-    }
-  };
-
-  const handleCalculate = async () => {
-    try {
-      const res = await fetch(`${apiBase}/projects/${activeProject.id}/calculate`, { 
-        method: 'POST',
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setCalcResults(data);
-        setDetailTab('calc-preview');
-        return data;
       } else {
         const err = await res.json();
         alert(`Lỗi tính toán: ${err.detail}`);
