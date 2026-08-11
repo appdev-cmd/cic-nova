@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createApiFetch } from '../api';
+import * as sb from '../services/supabaseService';
 import { Plus, Search, Trash2, Edit, X, RefreshCw, Shield } from 'lucide-react';
 import { User } from '../types';
 import { useFeedback } from '../components/FeedbackProvider';
@@ -46,18 +47,8 @@ const UserManagementModule: React.FC<UserManagementModuleProps> = ({ apiBase, to
   const fetchUsers = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${apiBase}/admin/users`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setUsers(data);
-      } else {
-        const err = await res.json();
-        console.error("Failed to fetch users:", err.detail);
-      }
+      const data = await sb.getUsers();
+      setUsers(data);
     } catch (e) {
       console.error("Error fetching users:", e);
     } finally {
@@ -78,32 +69,19 @@ const UserManagementModule: React.FC<UserManagementModuleProps> = ({ apiBase, to
     }
 
     try {
-      const res = await fetch(`${apiBase}/admin/users`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          username: newUser.username.trim(),
-          password: newUser.password,
-          name: newUser.name.trim(),
-          role: newUser.role
-        })
+      await sb.createUser({
+        username: newUser.username.trim(),
+        password: newUser.password,
+        name: newUser.name.trim(),
+        role: newUser.role
       });
-
-      const data = await res.json();
-      if (res.ok) {
-        alert("Tạo người dùng mới thành công!");
-        setShowAddModal(false);
-        setNewUser({ username: '', password: '', name: '', role: 'viewer' });
-        fetchUsers();
-      } else {
-        alert(`Lỗi khi tạo người dùng: ${data.detail}`);
-      }
-    } catch (e) {
+      alert("Đã tạo người dùng mới thành công!");
+      setShowAddModal(false);
+      setNewUser({ username: '', password: '', name: '', role: 'viewer' });
+      fetchUsers();
+    } catch (e: any) {
       console.error(e);
-      alert("Lỗi kết nối máy chủ.");
+      alert(`Lỗi khi tạo người dùng: ${e.message}`);
     }
   };
 
@@ -116,30 +94,19 @@ const UserManagementModule: React.FC<UserManagementModuleProps> = ({ apiBase, to
     }
 
     try {
-      const res = await fetch(`${apiBase}/admin/users/${editUser.id}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          name: editUser.name.trim(),
-          role: editUser.role,
-          password: editUser.password ? editUser.password : null
-        })
-      });
+      const updates: any = {
+        name: editUser.name.trim(),
+        role: editUser.role
+      };
+      if (editUser.password) updates.password = editUser.password;
 
-      const data = await res.json();
-      if (res.ok) {
-        alert("Cập nhật thông tin tài khoản thành công!");
-        setShowEditModal(false);
-        fetchUsers();
-      } else {
-        alert(`Lỗi khi cập nhật tài khoản: ${data.detail}`);
-      }
-    } catch (e) {
+      await sb.updateUser(editUser.id, updates);
+      alert("Cập nhật thông tin tài khoản thành công!");
+      setShowEditModal(false);
+      fetchUsers();
+    } catch (e: any) {
       console.error(e);
-      alert("Lỗi kết nối máy chủ.");
+      alert(`Lỗi khi cập nhật tài khoản: ${e.message}`);
     }
   };
 
@@ -152,22 +119,12 @@ const UserManagementModule: React.FC<UserManagementModuleProps> = ({ apiBase, to
     if (!await confirmAction(`Bạn có chắc chắn muốn xóa tài khoản: ${user.username} (${user.name})?`)) return;
 
     try {
-      const res = await fetch(`${apiBase}/admin/users/${user.id}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert("Đã xóa tài khoản thành công!");
-        fetchUsers();
-      } else {
-        alert(`Lỗi khi xóa tài khoản: ${data.detail}`);
-      }
-    } catch (e) {
+      await sb.deleteUser(user.id);
+      alert("Đã xóa tài khoản thành công!");
+      fetchUsers();
+    } catch (e: any) {
       console.error(e);
-      alert("Lỗi kết nối máy chủ.");
+      alert(`Lỗi khi xóa tài khoản: ${e.message}`);
     }
   };
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createApiFetch } from '../api';
+import * as sb from '../services/supabaseService';
 import { Plus, Trash2, Edit2, Save, X, Settings2, ShieldCheck, ClipboardList, PenTool, LayoutGrid, List, Search, Split, RotateCcw, Columns, Rows, RefreshCw, Check } from 'lucide-react';
 import DoorIllustration from '../components/DoorIllustration';
 import SlidePanel from '../components/SlidePanel';
@@ -338,16 +339,10 @@ function DoorsModule({ apiBase, token, user }: any) {
 
   const fetchSystems = async () => {
     try {
-      const res = await fetch(`${apiBase}/aluminum-systems`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          setSystems(data);
-          return;
-        }
-      }
+      const data = await sb.getSystems();
+      if (data.length > 0) { setSystems(data); return; }
     } catch (e) {
-      console.warn("API aluminum-systems unavailable:", e);
+      console.warn("Systems unavailable:", e);
     }
     setSystems([
       { id: 1, name: 'Xingfa 55', manufacturer: 'Xingfa Guangdong' },
@@ -358,16 +353,10 @@ function DoorsModule({ apiBase, token, user }: any) {
 
   const fetchTemplates = async () => {
     try {
-      const res = await fetch(`${apiBase}/door-templates`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          setTemplates(data);
-          return;
-        }
-      }
+      const data = await sb.getTemplates();
+      if (data.length > 0) { setTemplates(data); return; }
     } catch (e) {
-      console.warn("API door-templates unavailable:", e);
+      console.warn("Templates unavailable:", e);
     }
     setTemplates([
       { id: 1, system_id: 1, code: 'XF55-1D', name: 'Cửa đi 1 cánh Xingfa 55', type: 'CỬA ĐỊ 1 CÁNH', accessory_brand: 'Kinlong', glass_type: 'k8cl' },
@@ -380,16 +369,12 @@ function DoorsModule({ apiBase, token, user }: any) {
 
   const fetchTemplateFormulas = async (templateId: number) => {
     try {
-      const res = await fetch(`${apiBase}/door-templates/${templateId}/formulas`);
-      if (res.ok) {
-        const data = await res.json();
-        setFormulas(data || { profiles: [], accessories: [] });
-        return;
-      }
+      const data = await sb.getTemplateFormulas(templateId);
+      setFormulas(data && Array.isArray(data.profiles) ? data : { profiles: [], accessories: [] });
     } catch (e) {
-      console.warn("API formulas unavailable:", e);
+      console.warn("Formulas unavailable:", e);
+      setFormulas({ profiles: [], accessories: [] });
     }
-    setFormulas({ profiles: [], accessories: [] });
   };
 
   const handleSplitPane = (direction: 'horizontal' | 'vertical') => {

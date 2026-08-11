@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { createApiFetch } from '../api';
+import * as sb from '../services/supabaseService';
 import { Plus, Search, Trash2, Edit, Save, X, RefreshCw, Layers, ClipboardList, ShieldAlert, History } from 'lucide-react';
 import { useFeedback } from '../components/FeedbackProvider';
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges';
@@ -63,8 +64,7 @@ function MaterialsModule({ apiBase, token, user }) {
   const fetchMaterials = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${apiBase}/materials`);
-      const data = await res.json();
+      const data = await sb.getMaterials();
       setMaterials(data);
     } catch (e) {
       console.error("Error fetching materials:", e);
@@ -75,8 +75,7 @@ function MaterialsModule({ apiBase, token, user }) {
 
   const fetchPriceBooks = async () => {
     try {
-      const res = await fetch(`${apiBase}/price-books`);
-      const data = await res.json();
+      const data = await sb.getPriceBooks();
       setPriceBooks(data);
     } catch (e) {
       console.error("Error fetching price books:", e);
@@ -114,16 +113,13 @@ function MaterialsModule({ apiBase, token, user }) {
   const fetchPriceBookItems = async (bookId) => {
     setLoading(true);
     try {
-      const res = await fetch(`${apiBase}/price-books/${bookId}/items`);
-      const data = await res.json();
-      setBookItems(data);
+      const data = await sb.getPriceBookItems(bookId);
+      setBookItems(Array.isArray(data) ? data : []);
       
       // Initialize edit cache
       const prices = {};
-
-
-      data.forEach(item => {
-        prices[item.code] = item.book_price !== null ? item.book_price : item.default_price;
+      (Array.isArray(data) ? data : []).forEach(item => {
+        prices[item.material_code || item.code] = item.price !== null ? item.price : (item.default_price || 0);
       });
       setEditedBookPrices(prices);
     } catch (e) {
@@ -138,35 +134,27 @@ function MaterialsModule({ apiBase, token, user }) {
     if (isReadOnly || !newMaterial.code || !newMaterial.name) return;
 
     try {
-      const res = await fetch(`${apiBase}/materials`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code: newMaterial.code.trim(),
-          name: newMaterial.name.trim(),
-          category: newMaterial.category,
-          unit: newMaterial.unit,
-          default_price: Number(newMaterial.default_price) || 0,
-          weight_per_m: Number(newMaterial.weight_per_m) || 0.0
-        })
+      await sb.createMaterial({
+        code: newMaterial.code.trim(),
+        name: newMaterial.name.trim(),
+        category: newMaterial.category,
+        unit: newMaterial.unit,
+        default_price: Number(newMaterial.default_price) || 0,
+        weight_per_m: Number(newMaterial.weight_per_m) || 0.0
       });
-      if (res.ok) {
-        setShowAddModal(false);
-        setNewMaterial({
-          code: '',
-          name: '',
-          category: 'aluminum',
-          unit: 'kg',
-          default_price: 0,
-          weight_per_m: 0.0
-        });
-        fetchMaterials();
-      } else {
-        const err = await res.json();
-        alert(`Lỗi khi tạo vật tư: ${err.detail}`);
-      }
-    } catch (e) {
+      setShowAddModal(false);
+      setNewMaterial({
+        code: '',
+        name: '',
+        category: 'aluminum',
+        unit: 'kg',
+        default_price: 0,
+        weight_per_m: 0.0
+      });
+      fetchMaterials();
+    } catch (e: any) {
       console.error(e);
+      alert(`Lỗi khi tạo vật tư: ${e.message}`);
     }
   };
 
@@ -237,8 +225,8 @@ function MaterialsModule({ apiBase, token, user }) {
     if (isReadOnly) return;
     if (!await confirmAction(`Bạn có chắc muốn xóa vật tư mã: ${code}?`)) return;
     try {
-      const res = await fetch(`${apiBase}/materials/${id}`, { method: 'DELETE' });
-      if (res.ok) fetchMaterials();
+      await sb.deleteMaterial(id);
+      fetchMaterials();
     } catch (e) {
       console.error(e);
     }
@@ -259,21 +247,15 @@ function MaterialsModule({ apiBase, token, user }) {
   const handleSaveCatalog = async (id: number) => {
     if (isReadOnly) return;
     try {
-      const res = await fetch(`${apiBase}/materials/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: editValues.name.trim(),
-          category: editValues.category,
-          unit: editValues.unit,
-          default_price: Number(editValues.default_price) || 0,
-          weight_per_m: Number(editValues.weight_per_m) || 0.0
-        })
+      await sb.updateMaterial(id, {
+        name: editValues.name.trim(),
+        category: editValues.category,
+        unit: editValues.unit,
+        default_price: Number(editValues.default_price) || 0,
+        weight_per_m: Number(editValues.weight_per_m) || 0.0
       });
-      if (res.ok) {
-        setEditingId(null);
-        fetchMaterials();
-      }
+      setEditingId(null);
+      fetchMaterials();
     } catch (e) {
       console.error(e);
     }

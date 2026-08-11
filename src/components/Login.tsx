@@ -15,6 +15,7 @@ import {
   KeyRound,
 } from 'lucide-react';
 import { User } from '../types';
+import { supabaseLogin, supabaseRegisterInit, supabaseCheckSetup } from '../services/supabaseService';
 
 interface LoginProps {
   apiBase: string;
@@ -23,8 +24,8 @@ interface LoginProps {
 
 const Login: React.FC<LoginProps> = ({ apiBase, onLogin }) => {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [username, setUsername] = useState<string>('admin');
-  const [password, setPassword] = useState<string>('123456');
+  const [username, setUsername] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [fullName, setFullName] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [rememberMe, setRememberMe] = useState<boolean>(true);
@@ -36,13 +37,9 @@ const Login: React.FC<LoginProps> = ({ apiBase, onLogin }) => {
 
   useEffect(() => {
     let active = true;
-    fetch(`${apiBase}/auth/setup-status`)
-      .then(async (response) => {
-        if (!response.ok) throw new Error('Offline');
-        return response.json();
-      })
+    supabaseCheckSetup()
       .then((data) => {
-        if (active) setNeedsInitialAdmin(Boolean(data.needs_initial_admin));
+        if (active) setNeedsInitialAdmin(!data.initialized);
       })
       .catch(() => {
         if (active) setNeedsInitialAdmin(false);
@@ -50,7 +47,7 @@ const Login: React.FC<LoginProps> = ({ apiBase, onLogin }) => {
     return () => {
       active = false;
     };
-  }, [apiBase]);
+  }, []);
 
   const toggleTheme = () => {
     const newTheme = theme === 'dark' ? 'light' : 'dark';
@@ -77,69 +74,24 @@ const Login: React.FC<LoginProps> = ({ apiBase, onLogin }) => {
 
     try {
       if (isRegisterInit) {
-        const res = await fetch(`${apiBase}/auth/register-init`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username: cleanUsername,
-            password: password,
-            name: fullName.trim(),
-            role: 'admin',
-          }),
-        });
-
-        if (res.ok) {
-          setSuccessMsg('Đăng ký tài khoản Admin thành công! Vui lòng chuyển sang Đăng nhập.');
-          setIsRegisterInit(false);
-          setNeedsInitialAdmin(false);
-          setPassword('');
-          setLoading(false);
-          return;
-        }
+        await supabaseRegisterInit(cleanUsername, password, fullName.trim());
+        setSuccessMsg('Đăng ký tài khoản Admin thành công! Vui lòng chuyển sang Đăng nhập.');
+        setIsRegisterInit(false);
+        setNeedsInitialAdmin(false);
+        setPassword('');
+        setLoading(false);
+        return;
       }
 
-      // Try server login first if backend is running
-      try {
-        const res = await fetch(`${apiBase}/auth/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username: cleanUsername,
-            password: password,
-          }),
-        });
+      // Login via Supabase
+      const result = await supabaseLogin(cleanUsername, password);
+      localStorage.setItem('nova_token', result.token);
+      localStorage.setItem('nova_user', JSON.stringify(result.user));
+      onLogin(result.user, result.token);
 
-        if (res.ok) {
-          const data = await res.json();
-          localStorage.setItem('nova_token', data.access_token);
-          localStorage.setItem('nova_user', JSON.stringify(data.user));
-          onLogin(data.user, data.access_token);
-          setLoading(false);
-          return;
-        }
-      } catch (backendErr) {
-        // Backend offline or unreachable -> Fallthrough to Client-Side Auth
-      }
-
-      // Client-Side / Standalone Auth Mode: Accept valid credentials
-      const userRole = cleanUsername.toLowerCase() === 'viewer' ? 'viewer' : 'admin';
-      const displayName = cleanUsername.toLowerCase() === 'cic' ? 'CIC Administrator' : (cleanUsername.charAt(0).toUpperCase() + cleanUsername.slice(1));
-      
-      const loggedUser: User = {
-        id: 1,
-        username: cleanUsername,
-        name: displayName,
-        role: userRole,
-      };
-
-      const tokenStr = `nova_session_${Date.now()}`;
-      localStorage.setItem('nova_token', tokenStr);
-      localStorage.setItem('nova_user', JSON.stringify(loggedUser));
-      onLogin(loggedUser, tokenStr);
-
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError('Lỗi đăng nhập. Vui lòng thử lại.');
+      setError(err.message || 'Lỗi đăng nhập. Vui lòng thử lại.');
     } finally {
       setLoading(false);
     }
@@ -320,8 +272,8 @@ const Login: React.FC<LoginProps> = ({ apiBase, onLogin }) => {
           <div className="mb-4 p-3 bg-emerald-50/80 dark:bg-emerald-900/30 border border-emerald-200/80 dark:border-emerald-800/50 text-emerald-800 dark:text-emerald-200 text-xs font-medium rounded-xl flex items-center gap-2">
             <KeyRound className="w-4 h-4 text-emerald-600 shrink-0" />
             <div>
-              <span className="font-bold">Tài khoản mặc định:</span> <code className="bg-emerald-100 dark:bg-emerald-800/60 px-1.5 py-0.5 rounded text-emerald-900 dark:text-emerald-100 font-bold">admin</code> (hoặc <code className="bg-emerald-100 dark:bg-emerald-800/60 px-1.5 py-0.5 rounded text-emerald-900 dark:text-emerald-100 font-bold">cic</code>)<br />
-              <span className="font-bold">Mật khẩu:</span> <code className="bg-emerald-100 dark:bg-emerald-800/60 px-1.5 py-0.5 rounded text-emerald-900 dark:text-emerald-100 font-bold">123456</code> (hoặc bất kỳ)
+              <span className="font-bold">Đăng nhập:</span> Sử dụng tài khoản được cấp bởi quản trị viên hệ thống.<br />
+              Dữ liệu được lưu trữ an toàn trên <span className="font-bold">Supabase Cloud</span>.
             </div>
           </div>
 

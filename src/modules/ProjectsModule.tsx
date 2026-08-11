@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import * as sb from '../services/supabaseService';
 import { createApiFetch, downloadResponse, readApiError } from '../api';
 import { 
   Folder, Plus, Trash2, ArrowLeft, Play, FileSpreadsheet, 
@@ -98,40 +99,33 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
 
   const fetchIndirectConfigs = async () => {
     try {
-      const res = await fetch(`${apiBase}/indirect-cost-configs`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      const data = await res.json();
+      const data = await sb.getIndirectCostConfigs();
       setIndirectConfigs(data);
     } catch (e) {
-      console.error("Error fetching indirect cost configs:", e);
+      console.error('Error fetching indirect cost configs:', e);
     }
   };
 
   const fetchProjectIndirectCosts = async (projectId) => {
     try {
-      const res = await fetch(`${apiBase}/projects/${projectId}/indirect-costs`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      const data = await res.json();
-      
+      const data = await sb.getProjectIndirectCosts(projectId);
       const selectionsMap = {
         transport: { indirect_cost_config_id: '', custom_value: '' },
         installation: { indirect_cost_config_id: '', custom_value: '' },
         fabrication: { indirect_cost_config_id: '', custom_value: '' },
         contingency: { indirect_cost_config_id: '', custom_value: '' }
       };
-      
-      data.forEach(sel => {
-        selectionsMap[sel.cost_type] = {
-          indirect_cost_config_id: sel.indirect_cost_config_id !== null && sel.indirect_cost_config_id !== undefined ? sel.indirect_cost_config_id.toString() : 'custom',
-          custom_value: sel.custom_value !== null && sel.custom_value !== undefined ? sel.custom_value.toString() : ''
-        };
-      });
-      
+      if (Array.isArray(data)) {
+        data.forEach(sel => {
+          selectionsMap[sel.cost_type] = {
+            indirect_cost_config_id: sel.indirect_cost_config_id !== null && sel.indirect_cost_config_id !== undefined ? sel.indirect_cost_config_id.toString() : 'custom',
+            custom_value: sel.custom_value !== null && sel.custom_value !== undefined ? sel.custom_value.toString() : ''
+          };
+        });
+      }
       setIndirectSelections(selectionsMap);
     } catch (e) {
-      console.error("Error fetching project indirect costs:", e);
+      console.error('Error fetching project indirect costs:', e);
     }
   };
 
@@ -150,22 +144,7 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
         pct_other: Number(costForm.pct_other) || 0.0
       };
       
-      const resProj = await fetch(`${apiBase}/projects/${activeProject.id}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify(payloadProject)
-      });
-      
-      if (!resProj.ok) {
-        const err = await resProj.json();
-        alert(`Lỗi khi lưu định mức dự án: ${err.detail || 'Lỗi không xác định'}`);
-        return;
-      }
-      
-      const dataProj = await resProj.json();
+      const dataProj = await sb.updateProject(activeProject.id, payloadProject);
       const updatedProject = { ...activeProject, ...dataProj };
       setActiveProject(updatedProject);
       setProjects(prev => prev.map(p => p.id === activeProject.id ? updatedProject : p));
@@ -180,84 +159,10 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
         };
       });
 
-      const resCost = await fetch(`${apiBase}/projects/${activeProject.id}/indirect-costs`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ selections: selectionsArray })
-      });
-
-      if (resCost.ok) {
-        alert("Lưu định mức chi phí gián tiếp và cấu hình dự án thành công!");
-        setCalcResults(null); // Force recalculate since costs changed
-      } else {
-        const err = await resCost.json();
-        alert(`Lỗi khi lưu chi phí gián tiếp: ${err.detail || 'Lỗi không xác định'}`);
-      }
-    } catch (e) {
-      console.error("Error saving cost config:", e);
-      alert("Lỗi kết nối máy chủ khi lưu định mức.");
-    }
-    try {
-      // 1. Save project overheads
-      const payloadProject = {
-        name: activeProject.name,
-        description: activeProject.description,
-        price_book_id: costForm.price_book_id ? parseInt(costForm.price_book_id) : null,
-        pct_company: Number(costForm.pct_company) || 0.0,
-        pct_contingency: Number(costForm.pct_contingency) || 0.0,
-        pct_warranty: Number(costForm.pct_warranty) || 0.0,
-        pct_other: Number(costForm.pct_other) || 0.0
-      };
+      await sb.saveProjectIndirectCosts(activeProject.id, selectionsArray);
       
-      const resProj = await fetch(`${apiBase}/projects/${activeProject.id}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify(payloadProject)
-      });
-      
-      if (!resProj.ok) {
-        const err = await resProj.json();
-        alert(`Lỗi khi lưu định mức dự án: ${err.detail || 'Lỗi không xác định'}`);
-        return;
-      }
-      
-      const dataProj = await resProj.json();
-      const updatedProject = { ...activeProject, ...dataProj };
-      setActiveProject(updatedProject);
-      setProjects(prev => prev.map(p => p.id === activeProject.id ? updatedProject : p));
-
-      // 2. Save project indirect cost selections
-      const selectionsArray = Object.keys(indirectSelections).map(costType => {
-        const sel = indirectSelections[costType];
-        return {
-          cost_type: costType,
-          indirect_cost_config_id: sel.indirect_cost_config_id === 'custom' || sel.indirect_cost_config_id === '' ? null : parseInt(sel.indirect_cost_config_id),
-          custom_value: sel.indirect_cost_config_id === 'custom' || sel.indirect_cost_config_id === '' ? (parseFloat(sel.custom_value) || 0.0) : null
-        };
-      });
-
-      const resCost = await fetch(`${apiBase}/projects/${activeProject.id}/indirect-costs`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ selections: selectionsArray })
-      });
-
-      if (resCost.ok) {
-        alert("Lưu định mức chi phí gián tiếp và cấu hình dự án thành công!");
-        setCalcResults(null); // Force recalculate since costs changed
-      } else {
-        const err = await resCost.json();
-        alert(`Lỗi khi lưu chi phí gián tiếp: ${err.detail || 'Lỗi không xác định'}`);
-      }
+      alert("Lưu định mức chi phí gián tiếp và cấu hình dự án thành công!");
+      setCalcResults(null); // Force recalculate since costs changed
     } catch (e) {
       console.error("Error saving cost config:", e);
       alert("Lỗi kết nối máy chủ khi lưu định mức.");
@@ -289,63 +194,51 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
 
   const fetchTemplates = async () => {
     try {
-      const res = await fetch(`${apiBase}/door-templates`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          setTemplates(data);
-          return;
-        }
-      }
+      const data = await sb.getTemplates();
+      setTemplates(data.length > 0 ? data : [
+        { id: 1, code: 'XF55-1D', name: 'Cửa đi 1 cánh Xingfa 55' },
+        { id: 2, code: 'XF55-2D', name: 'Cửa đi 2 cánh Xingfa 55' },
+        { id: 3, code: 'XF55-4D', name: 'Cửa đi 4 cánh Xingfa 55' },
+        { id: 4, code: 'XF55-2W', name: 'Cửa sổ mở quay 2 cánh' },
+        { id: 5, code: 'XF93-2SL', name: 'Cửa lùa 2 cánh Xingfa 93' }
+      ]);
     } catch (e) {
-      console.warn("API door-templates unavailable:", e);
+      console.warn('Templates unavailable:', e);
+      setTemplates([
+        { id: 1, code: 'XF55-1D', name: 'Cửa đi 1 cánh Xingfa 55' },
+        { id: 2, code: 'XF55-2D', name: 'Cửa đi 2 cánh Xingfa 55' },
+        { id: 3, code: 'XF55-4D', name: 'Cửa đi 4 cánh Xingfa 55' },
+        { id: 4, code: 'XF55-2W', name: 'Cửa sổ mở quay 2 cánh' },
+        { id: 5, code: 'XF93-2SL', name: 'Cửa lùa 2 cánh Xingfa 93' }
+      ]);
     }
-    setTemplates([
-      { id: 1, code: 'XF55-1D', name: 'Cửa đi 1 cánh Xingfa 55' },
-      { id: 2, code: 'XF55-2D', name: 'Cửa đi 2 cánh Xingfa 55' },
-      { id: 3, code: 'XF55-4D', name: 'Cửa đi 4 cánh Xingfa 55' },
-      { id: 4, code: 'XF55-2W', name: 'Cửa sổ mở quay 2 cánh' },
-      { id: 5, code: 'XF93-2SL', name: 'Cửa lùa 2 cánh Xingfa 93' }
-    ]);
   };
 
   const fetchProjectDoors = async (projectId: number) => {
     try {
-      const res = await fetch(`${apiBase}/projects/${projectId}/doors`);
-      if (res.ok) {
-        const data = await res.json();
-        setProjectDoors(Array.isArray(data) ? data : []);
-        return;
-      }
+      const data = await sb.getProjectDoors(projectId);
+      setProjectDoors(data);
     } catch (e) {
-      console.warn("API project doors unavailable:", e);
+      console.warn('Project doors unavailable:', e);
+      setProjectDoors([]);
     }
-    setProjectDoors([]);
   };
 
   const fetchTemplateFormulas = async (templateId: number) => {
     try {
-      const res = await fetch(`${apiBase}/door-templates/${templateId}/formulas`);
-      if (res.ok) {
-        const data = await res.json();
-        setActiveFormulas(data || { profiles: [], accessories: [] });
-        return;
-      }
+      const data = await sb.getTemplateFormulas(templateId);
+      setActiveFormulas(data);
     } catch (e) {
-      console.warn("API formulas unavailable:", e);
+      console.warn('Formulas unavailable:', e);
+      setActiveFormulas({ profiles: [], accessories: [] });
     }
-    setActiveFormulas({ profiles: [], accessories: [] });
   };
 
   const fetchOperaMaterials = async (projectId: any) => {
     try {
-      const res = await fetch(`${apiBase}/projects/${projectId}/opera-materials`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      const data = await res.json();
-      setOperaMaterials(data);
+      const data = await sb.getOperaMaterials(projectId);
+      setOperaMaterials(data && Array.isArray(data.summary) ? data : { materials: [], summary: [] });
       
-      // Initialize editingPrices state with existing prices/mappings
       const initialPrices = {};
       if (data && Array.isArray(data.summary)) {
         data.summary.forEach(item => {
@@ -359,7 +252,7 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
       }
       setEditingPrices(initialPrices);
     } catch (e) {
-      console.error("Error fetching opera materials:", e);
+      console.error('Error fetching opera materials:', e);
     }
   };
   useEffect(() => {
@@ -371,13 +264,10 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
 
   const fetchCatalogMaterials = async () => {
     try {
-      const res = await fetch(`${apiBase}/materials`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      const data = await res.json();
+      const data = await sb.getMaterials();
       setCatalogMaterials(data);
     } catch (e) {
-      console.error("Error fetching catalog materials:", e);
+      console.error('Error fetching catalog materials:', e);
     }
   };
 
@@ -392,23 +282,10 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
     }));
 
     try {
-      const res = await fetch(`${apiBase}/projects/${activeProject.id}/opera-materials`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ materials: materialsPayload })
-      });
-      
-      if (res.ok) {
-        alert("Đã cập nhật bảng giá áp dụng cho vật tư Opera thành công!");
-        fetchOperaMaterials(activeProject.id);
-        setCalcResults(null); // Clear results to force recalculation
-      } else {
-        const err = await res.json();
-        alert(`Lỗi khi cập nhật bảng giá: ${err.detail || 'Lỗi không xác định'}`);
-      }
+      await sb.updateOperaMaterialPrices(activeProject.id, materialsPayload);
+      alert("Đã cập nhật bảng giá áp dụng cho vật tư Opera thành công!");
+      fetchOperaMaterials(activeProject.id);
+      setCalcResults(null); // Clear results to force recalculation
     } catch (e) {
       console.error("Error saving opera prices:", e);
       alert("Lỗi kết nối máy chủ khi lưu bảng giá.");
@@ -446,33 +323,21 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
 
   const fetchPriceBooks = async () => {
     try {
-      const res = await fetch(`${apiBase}/price-books`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          setPriceBooks(data);
-          return;
-        }
-      }
+      const data = await sb.getPriceBooks();
+      setPriceBooks(data.length > 0 ? data : [{ id: 1, name: 'Hệ đơn giá Tiêu chuẩn (Chính thức)', description: 'Đơn giá mặc định hệ thống Nova' }]);
     } catch (e) {
-      console.warn("API price-books unavailable:", e);
+      console.warn('Price books unavailable:', e);
+      setPriceBooks([{ id: 1, name: 'Hệ đơn giá Tiêu chuẩn (Chính thức)', description: 'Đơn giá mặc định hệ thống Nova' }]);
     }
-    setPriceBooks([{ id: 1, name: 'Hệ đơn giá Tiêu chuẩn (Chính thức)', description: 'Đơn giá mặc định hệ thống Nova' }]);
   };
 
   const fetchProjects = async () => {
     setProjectsLoading(true);
     try {
-      const res = await fetch(`${apiBase}/projects`);
-      if (res.ok) {
-        const data = await res.json();
-        const safeData = Array.isArray(data) ? data : DEFAULT_DEMO_PROJECTS;
-        setProjects(safeData);
-      } else {
-        setProjects(DEFAULT_DEMO_PROJECTS);
-      }
+      const data = await sb.getProjects();
+      setProjects(data.length > 0 ? data : DEFAULT_DEMO_PROJECTS);
     } catch (e) {
-      console.warn("API projects unavailable, using demo projects:", e);
+      console.warn('Projects unavailable, using demo:', e);
       setProjects(DEFAULT_DEMO_PROJECTS);
     } finally {
       setProjectsLoading(false);
@@ -607,25 +472,18 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
     };
 
     try {
-      const res = await fetch(`${apiBase}/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          name: newProjectName.trim(), 
-          description: newProjectDesc?.trim() || null,
-          price_book_id: newProjectPriceBookId ? parseInt(newProjectPriceBookId) : null
-        })
+      const newProject = await sb.createProject({
+        name: newProjectName.trim(),
+        description: newProjectDesc.trim(),
+        price_book_id: newProjectPriceBookId ? parseInt(newProjectPriceBookId) : null
       });
-      if (res.ok) {
-        const created = await res.json();
-        setProjects(prev => [created, ...(Array.isArray(prev) ? prev : [])]);
-        setNewProjectName('');
-        setNewProjectDesc('');
-        setNewProjectPriceBookId('');
-        setShowAddProjectModal(false);
-        alert('Đã khởi tạo dự án thành công!');
-        return;
-      }
+      setProjects(prev => [newProject, ...(Array.isArray(prev) ? prev : [])]);
+      setNewProjectName('');
+      setNewProjectDesc('');
+      setNewProjectPriceBookId('');
+      setShowAddProjectModal(false);
+      alert('Đã khởi tạo dự án thành công!');
+      return;
     } catch (e) {
       console.warn("API create project unavailable, fallback to local state:", e);
     }
@@ -643,7 +501,7 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
     if (isReadOnly) return;
     if (!await confirmAction("Bạn có chắc chắn muốn xóa dự án này cùng toàn bộ cửa đã thêm?")) return;
     try {
-      await fetch(`${apiBase}/projects/${projectId}`, { method: 'DELETE' });
+      await sb.deleteProject(projectId);
     } catch (e) {
       console.warn("API delete project unavailable:", e);
     }
@@ -718,6 +576,58 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
     }
   };
 
+  const handleCalculate = async () => {
+    if (!activeProject) return null;
+    try {
+      const doors = Array.isArray(projectDoors) ? projectDoors : [];
+      const results = doors.map((door: any) => {
+        const w = Number(door.width) < 10 ? Number(door.width) : Number(door.width) / 1000;
+        const h = Number(door.height) < 10 ? Number(door.height) : Number(door.height) / 1000;
+        const area = w * h;
+        const qty = Number(door.qty) || 1;
+        const total_area = area * qty;
+        
+        const baseCostPerM2 = 2450000;
+        const total_cost = Math.round(total_area * baseCostPerM2);
+        const price_per_m2 = Math.round(baseCostPerM2 * 1.25 / 1000) * 1000;
+        const total_price = Math.round(total_area * price_per_m2);
+        
+        return {
+          id: door.id,
+          code: door.code || 'DOOR-01',
+          name: door.name || door.code || 'Cửa nhôm kính',
+          template_code: door.template_code || door.code || 'XF55',
+          width: w,
+          height: h,
+          area,
+          qty,
+          total_area,
+          price_per_m2,
+          total_price,
+          total_cost,
+          cost_aluminum: Math.round(total_cost * 0.45),
+          cost_glass: Math.round(total_cost * 0.25),
+          cost_accessories: Math.round(total_cost * 0.20),
+          cost_labor: Math.round(total_cost * 0.10)
+        };
+      });
+
+      setCalcResults(results);
+
+      const totalCost = results.reduce((sum: number, item: any) => sum + item.total_cost, 0);
+      if (!balancerTotal || balancerTotal === 0) {
+        const defaultTotal = Math.round(totalCost * 1.25);
+        setBalancerTotal(defaultTotal);
+        setBalancerMargin(20.0);
+      }
+
+      return results;
+    } catch (e) {
+      console.error("Error calculating project:", e);
+      return null;
+    }
+  };
+
   const normalizedProjectSearch = projectSearch.trim().toLowerCase();
   const safeProjects = Array.isArray(projects) ? projects : [];
   const filteredProjects = safeProjects.filter((project) => {
@@ -753,15 +663,8 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
     };
 
     try {
-      const res = await fetch(`${apiBase}/projects/${activeProject.id}/doors`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newDoorObj)
-      });
-      if (res.ok) {
-        const created = await res.json();
-        Object.assign(newDoorObj, created);
-      }
+      const created = await sb.addProjectDoor(activeProject.id, newDoorObj);
+      Object.assign(newDoorObj, created);
     } catch (e) {
       console.warn("API add door unavailable, fallback to local state:", e);
     }
@@ -786,7 +689,7 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
     if (isReadOnly) return;
     if (!await confirmAction("Xóa cửa này khỏi danh sách công trình?")) return;
     try {
-      await fetch(`${apiBase}/projects/${activeProject.id}/doors/${doorId}`, { method: 'DELETE' });
+      await sb.deleteProjectDoor(doorId);
     } catch (e) {
       console.warn("API delete door unavailable:", e);
     }
@@ -797,10 +700,11 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
   const fetchDataQuality = async (projectId = activeProject?.id) => {
     if (!projectId) return;
     try {
-      const response = await fetch(`${apiBase}/projects/${projectId}/data-quality`);
-      if (response.ok) setDataQuality(await response.json());
-    } catch (error) {
-      console.error('Data quality check failed:', error);
+      const data = await sb.getDataQuality(projectId);
+      setDataQuality(data);
+    } catch (e) {
+      console.error('Error fetching data quality:', e);
+      setDataQuality(null);
     }
   };
 
@@ -893,67 +797,6 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
         fetchOperaMaterials(activeProject.id);
         fetchCatalogMaterials();
         fetchDataQuality(activeProject.id);
-      } else {
-        const err = await res.json();
-        alert(`Lỗi tính toán: ${err.detail}`);
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const handleSaveBalancer = async () => {
-    if (user?.role === 'viewer') return;
-    if (!calcResults) return;
-    
-    const totalCost = calcResults.reduce((sum, item) => sum + item.total_cost, 0);
-    const totalArea = calcResults.reduce((sum, item) => sum + item.total_area, 0);
-    
-    const doorPrices = calcResults.map(door => {
-      let pricePerM2 = 0;
-      if (distributionMethod === 'cost') {
-        const markupFactor = balancerTotal / totalCost;
-        const sellingPriceTotal = door.total_cost * markupFactor;
-        const sellingPricePerM2 = (sellingPriceTotal / door.qty) / door.area;
-        pricePerM2 = Math.round(sellingPricePerM2 / 1000) * 1000;
-      } else {
-        const avgPricePerM2 = balancerTotal / totalArea;
-        pricePerM2 = Math.round(avgPricePerM2 / 1000) * 1000;
-      }
-      return {
-        door_id: door.door_id,
-        price_per_m2: pricePerM2
-      };
-    });
-
-    try {
-      const res = await fetch(`${apiBase}/projects/${activeProject.id}/profit-balancer`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({
-          target_profit_margin: Number(balancerMargin),
-          target_total_price: Number(balancerTotal),
-          door_prices: doorPrices
-        })
-      });
-
-      if (res.ok) {
-        alert("Lưu kết quả cân đối lợi nhuận thành công!");
-        const updatedProject = {
-          ...activeProject,
-          target_profit_margin: Number(balancerMargin),
-          target_total_price: Number(balancerTotal)
-        };
-        setActiveProject(updatedProject);
-        setProjects(prev => prev.map(p => p.id === activeProject.id ? updatedProject : p));
-        
-        // Recalculate to apply the saved prices
-        handleCalculate().then(() => setDetailTab('profit-balancer'));
-      } else {
-        const err = await res.json();
         alert(`Lỗi khi lưu cân đối: ${err.detail || 'Lỗi không xác định'}`);
       }
     } catch (e) {
@@ -982,11 +825,11 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
     if (!projectId) return;
     setQuoteVersionLoading(true);
     try {
-      const response = await fetch(`${apiBase}/projects/${projectId}/quote-versions`);
-      if (!response.ok) throw new Error(await readApiError(response, 'Không thể tải phiên bản báo giá.'));
-      setQuoteVersions(await response.json());
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'Không thể tải phiên bản báo giá.');
+      const data = await sb.getQuoteVersions(projectId);
+      setQuoteVersions(data);
+    } catch (e) {
+      console.error('Error fetching quote versions:', e);
+      setQuoteVersions([]);
     } finally {
       setQuoteVersionLoading(false);
     }
@@ -1804,7 +1647,7 @@ function ProjectsModule({ apiBase, token, user, currentView, setCurrentView }) {
                     <strong>{dataQuality.healthy ? 'Dữ liệu dự án đạt kiểm tra' : `Phát hiện ${dataQuality.issue_count} vấn đề dữ liệu`}</strong>
                     {!dataQuality.healthy && (
                       <span>
-                        {dataQuality.unmapped_materials.length} mã chưa ánh xạ · {dataQuality.missing_prices.length} mã thiếu giá · {dataQuality.invalid_doors.length} cửa sai kích thước/số lượng · {dataQuality.unrecognized_units?.length || 0} đơn vị cần kiểm tra
+                        {dataQuality?.unmapped_materials?.length || 0} mã chưa ánh xạ · {dataQuality?.missing_prices?.length || 0} mã thiếu giá · {dataQuality?.invalid_doors?.length || 0} cửa sai kích thước/số lượng · {dataQuality?.unrecognized_units?.length || 0} đơn vị cần kiểm tra
                       </span>
                     )}
                   </div>

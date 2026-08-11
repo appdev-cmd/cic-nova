@@ -88,11 +88,11 @@ function App() {
 
       {/* Main Content Area */}
       <main className="main-content">
-        {currentView === 'projects' && <ProjectsModule apiBase={API_BASE} user={user} />}
-        {currentView === 'templates' && <DoorsModule apiBase={API_BASE} user={user} />}
-        {currentView === 'materials' && <MaterialsModule apiBase={API_BASE} user={user} />}
-        {currentView === 'aluminum_order' && <AluminumOrderModule apiBase={API_BASE} user={user} />}
-        {currentView === 'users' && <UserManagementModule apiBase={API_BASE} currentUser={user} />}
+        {currentView === 'projects' && <ProjectsModule apiBase={API_BASE} user={user} token={token} />}
+        {currentView === 'templates' && <DoorsModule apiBase={API_BASE} user={user} token={token} />}
+        {currentView === 'materials' && <MaterialsModule apiBase={API_BASE} user={user} token={token} />}
+        {currentView === 'aluminum_order' && <AluminumOrderModule apiBase={API_BASE} user={user} token={token} />}
+        {currentView === 'users' && <UserManagementModule apiBase={API_BASE} currentUser={user} token={token} />}
       </main>
     </div>
   );
